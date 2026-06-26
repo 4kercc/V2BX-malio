@@ -37,10 +37,17 @@ for ((i=1; i<=NODE_COUNT; i++)); do
   echo "--- 节点 $i ---"
   read -p "  NodeID: " nid
   read -p "  域名 (certdomain): " dom
-  read -p "  ListenIP (默认 0.0.0.0): " lip
-  lip=${lip:-0.0.0.0}
-  read -p "  SendIP (默认 0.0.0.0): " sip
-  sip=${sip:-0.0.0.0}
+
+  # 单节点无需绑定IP，默认 0.0.0.0
+  if [[ $NODE_COUNT -eq 1 ]]; then
+    lip="0.0.0.0"
+    sip="0.0.0.0"
+  else
+    read -p "  ListenIP (默认 0.0.0.0): " lip
+    lip=${lip:-0.0.0.0}
+    read -p "  SendIP (默认 0.0.0.0): " sip
+    sip=${sip:-0.0.0.0}
+  fi
 
   NODE_IDS+=("$nid")
   DOMAINS+=("$dom")
