@@ -255,15 +255,7 @@ EOF
     echo "V2bX version      - 查看 V2bX 版本"
     echo "------------------------------------------"
     # 首次安装询问是否生成配置文件
-    if [[ $first_install == true ]]; then
-        read -rp "检测到你为第一次安装V2bX,是否自动直接生成配置文件？(y/n): " if_generate
-        if [[ $if_generate == [Yy] ]]; then
-            curl -o ./initconfig.sh -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/initconfig.sh
-            source initconfig.sh
-            rm initconfig.sh -f
-            generate_config_file
-        fi
-    fi
+
 }
 
 echo -e "${green}开始安装${plain}"
