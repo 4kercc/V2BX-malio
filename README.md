@@ -5,6 +5,11 @@
 ## 一键安装脚本
 wget -N https://raw.githubusercontent.com/q42602736/V2BX-malio/main/install.sh && bash install.sh
 
+
+
+## 直接安装anytls
+wget -N https://raw.githubusercontent.com/4kercc/V2BX-malio/refs/heads/main/install-anytls.sh && bash install-anytls.sh
+
 ## 🚀 特性
 
 - ✅ **完全兼容 SSPanel-UIM** - 无需修改面板代码
