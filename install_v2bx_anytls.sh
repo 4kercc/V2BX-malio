@@ -3,37 +3,66 @@
 set -e
 
 ############################################
-# AnyTLS + V2bX SAFE INSTALL (FINAL PACK)
+# AnyTLS + V2bX INSTALL (Multi-Node)
 ############################################
 if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1; then
   echo "[ERROR] 端口 80 已被占用，安装退出。"
   exit 1
 fi
 
-API_HOST="$1"
-API_KEY="$2"
-NODE_ID="$3"
-certdomain="$4"
-ACME_EMAIL="$5"
+############################################
+# 共用参数
+############################################
+API_HOST="${1:-}"
+API_KEY="${2:-}"
 
-if [[ -z "$API_HOST" ]]; then read -p "API_HOST: " API_HOST; fi
-if [[ -z "$API_KEY" ]]; then read -p "API_KEY: " API_KEY; fi
-if [[ -z "$NODE_ID" ]]; then read -p "NODE_ID: " NODE_ID; fi
-if [[ -z "$certdomain" ]]; then read -p "certdomain: " certdomain; fi
+if [[ -z "$API_HOST" ]]; then read -p "API_HOST (e.g. https://baidu.com): " API_HOST; fi
+if [[ -z "$API_KEY" ]];  then read -p "API_KEY: " API_KEY; fi
 
-if [[ -z "$ACME_EMAIL" ]]; then
-  ACME_EMAIL="v2bx@github.com"
-fi
+read -p "ACME Email (默认 v2bx@github.com): " ACME_EMAIL
+ACME_EMAIL=${ACME_EMAIL:-v2bx@github.com}
 
-echo "==== INSTALL START ===="
-echo "DOMAIN: $certdomain"
-echo "EMAIL : $ACME_EMAIL"
+############################################
+# 多节点参数采集
+############################################
+echo ""
+echo "==== 节点配置 ===="
+echo "多个节点只有 NodeID / 域名 / SendIP 不同，其余参数共享"
+read -p "节点数量: " NODE_COUNT
 
-echo "确认后请回车继续"
+declare -a NODE_IDS DOMAINS SEND_IPS LISTEN_IPS
+
+for ((i=1; i<=NODE_COUNT; i++)); do
+  echo ""
+  echo "--- 节点 $i ---"
+  read -p "  NodeID: " nid
+  read -p "  域名 (certdomain): " dom
+  read -p "  ListenIP (默认 0.0.0.0): " lip
+  lip=${lip:-0.0.0.0}
+  read -p "  SendIP (默认 0.0.0.0): " sip
+  sip=${sip:-0.0.0.0}
+
+  NODE_IDS+=("$nid")
+  DOMAINS+=("$dom")
+  LISTEN_IPS+=("$lip")
+  SEND_IPS+=("$sip")
+done
+
+############################################
+# 确认
+############################################
+echo ""
+echo "==== 配置确认 ===="
+echo "API_HOST : $API_HOST"
+echo "节点数   : $NODE_COUNT"
+for ((i=0; i<NODE_COUNT; i++)); do
+  echo "  节点$((i+1)): NodeID=${NODE_IDS[$i]}  域名=${DOMAINS[$i]}  ListenIP=${LISTEN_IPS[$i]}  SendIP=${SEND_IPS[$i]}"
+done
+read -p "确认无误？回车继续 Ctrl+C 取消 ..."
+
 ############################################
 # deps
 ############################################
-
 if command -v apt &>/dev/null; then
   apt update -y
   apt install -y curl jq cron socat openssl unzip
@@ -44,97 +73,102 @@ fi
 ############################################
 # install V2bX
 ############################################
-
 bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/refs/heads/main/install.sh)
 
 ############################################
 # dirs
 ############################################
-
 CONFIG_DIR="/etc/V2bX"
 SSL_DIR="/etc/ssl"
 mkdir -p $CONFIG_DIR $SSL_DIR
 
 ############################################
-# node config
+# fallback certs for all domains
 ############################################
-
-NODE_JSON=$(curl -s -H "Authorization: ${API_KEY}" \
-"${API_HOST}/api/v1/node/${NODE_ID}/config")
-
-PORT=$(echo "$NODE_JSON" | jq -r '.port')
-UUID=$(echo "$NODE_JSON" | jq -r '.uuid')
-
-############################################
-# fallback cert (SAFE MODE)
-############################################
-
-openssl req -x509 -nodes -newkey rsa:2048 \
--keyout ${SSL_DIR}/${certdomain}.key \
--out ${SSL_DIR}/${certdomain}.crt \
--subj "/CN=${certdomain}" \
--days 3650
+for dom in "${DOMAINS[@]}"; do
+  echo "生成自签证书: $dom"
+  openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout ${SSL_DIR}/${dom}.key \
+    -out ${SSL_DIR}/${dom}.crt \
+    -subj "/CN=${dom}" \
+    -days 3650
+done
 
 ############################################
-# config.json (FIXED STRUCTURE)
+# 生成 Nodes JSON 数组
 ############################################
+gen_nodes() {
+  local first=true
+  for ((i=0; i<NODE_COUNT; i++)); do
+    $first || echo ","
+    first=false
+    cat <<EOF
+    {
+      "Core": "sing",
+      "ApiHost": "${API_HOST}",
+      "ApiKey": "${API_KEY}",
+      "NodeID": ${NODE_IDS[$i]},
+      "NodeType": "anytls",
+      "Timeout": 30,
+      "ListenIP": "${LISTEN_IPS[$i]}",
+      "SendIP": "${SEND_IPS[$i]}",
+      "DeviceOnlineMinTraffic": 200,
+      "MinReportTraffic": 0,
+      "TCPFastOpen": false,
+      "SniffEnabled": true,
+      "CertConfig": {
+        "CertMode": "http",
+        "RejectUnknownSni": false,
+        "CertDomain": "${DOMAINS[$i]}",
+        "CertFile": "${SSL_DIR}/${DOMAINS[$i]}.crt",
+        "KeyFile": "${SSL_DIR}/${DOMAINS[$i]}.key",
+        "Email": "${ACME_EMAIL}",
+        "Provider": "cloudflare",
+        "DNSEnv": {
+          "EnvName": "env1"
+        }
+      }
+    }
+EOF
+  done
+}
 
+############################################
+# config.json
+############################################
 cat > ${CONFIG_DIR}/config.json <<EOF
 {
-    "Log": {
-        "Level": "debug",
-        "Output": ""
-    },
-    "Cores": [
+  "Log": {
+    "Level": "debug",
+    "Output": ""
+  },
+  "Cores": [
     {
-        "Type": "sing",
-        "Log": {
-            "Level": "error",
-            "Timestamp": true
-        },
-        "NTP": {
-            "Enable": false,
-            "Server": "time.apple.com",
-            "ServerPort": 0
-        },
-        "OriginalPath": "/etc/V2bX/sing_origin.json"
-    }],
-    "Nodes": [{
-            "Core": "sing",
-            "ApiHost": "${API_HOST}",
-            "ApiKey": "${API_KEY}",
-            "NodeID": ${NODE_ID},
-            "NodeType": "anytls",
-            "Timeout": 30,
-            "ListenIP": "::",
-            "SendIP": "0.0.0.0",
-            "DeviceOnlineMinTraffic": 200,
-            "MinReportTraffic": 0,
-            "TCPFastOpen": false,
-            "SniffEnabled": true,
-            "CertConfig": {
-                "CertMode": "http",
-                "RejectUnknownSni": false,
-                "CertDomain": "${certdomain}",
-                "CertFile": "${SSL_DIR}/${certdomain}.crt",
-                "KeyFile": "${SSL_DIR}/${certdomain}.key",
-                "Email": "${ACME_EMAIL}",
-                "Provider": "cloudflare",
-                "DNSEnv": {
-                    "EnvName": "env1"
-                }
-            }
-        }]
+      "Type": "sing",
+      "Log": {
+        "Level": "error",
+        "Timestamp": true
+      },
+      "NTP": {
+        "Enable": false,
+        "Server": "time.apple.com",
+        "ServerPort": 0
+      },
+      "OriginalPath": "/etc/V2bX/sing_origin.json"
+    }
+  ],
+  "Nodes": [
+$(gen_nodes)
+  ]
 }
 EOF
 
 ############################################
 # sing_origin.json
 ############################################
-
 dnsstrategy="prefer_ipv4"
 
-   cat <<EOF > /etc/V2bX/sing_origin.json
+cat <<EOF > /etc/V2bX/sing_origin.json
 {
   "dns": {
     "servers": [
@@ -208,11 +242,9 @@ dnsstrategy="prefer_ipv4"
 }
 EOF
 
-
 ############################################
-# ACME SAFE
+# ACME for all domains
 ############################################
-
 ACME=~/.acme.sh/acme.sh
 
 if ! command -v $ACME &>/dev/null; then
@@ -225,20 +257,30 @@ $ACME --set-default-ca --server letsencrypt >/dev/null 2>&1
 $ACME --register-account -m $ACME_EMAIL >/dev/null 2>&1
 $ACME --install-cronjob >/dev/null 2>&1
 
-$ACME --issue -d ${certdomain} --standalone --keylength ec-256 --force
+for dom in "${DOMAINS[@]}"; do
+  echo "申请 ACME 证书: $dom"
+  $ACME --issue -d ${dom} --standalone --keylength ec-256 --force
 
-if [[ $? -eq 0 ]]; then
-  $ACME --install-cert \
-    -d ${certdomain} \
-    --fullchain-file ${SSL_DIR}/${certdomain}.crt \
-    --key-file ${SSL_DIR}/${certdomain}.key \
-    --reloadcmd "systemctl restart V2bX"
-fi
+  if [[ $? -eq 0 ]]; then
+    $ACME --install-cert \
+      -d ${dom} \
+      --fullchain-file ${SSL_DIR}/${dom}.crt \
+      --key-file ${SSL_DIR}/${dom}.key \
+      --reloadcmd "systemctl restart V2bX"
+  fi
+done
 
 set -e
 
+############################################
+# restart
+############################################
 systemctl restart V2bX || true
 
 v2bx log
 
-echo "INSTALL DONE"
+echo "==== INSTALL DONE ===="
+echo "节点数: $NODE_COUNT"
+for ((i=0; i<NODE_COUNT; i++)); do
+  echo "  NodeID=${NODE_IDS[$i]}  域名=${DOMAINS[$i]}  ListenIP=${LISTEN_IPS[$i]}  SendIP=${SEND_IPS[$i]}"
+done
