@@ -1,177 +1,218 @@
 #!/bin/bash
 
-red='\033[0;31m'
-green='\033[0;32m'
-yellow='\033[0;33m'
-plain='\033[0m'
-
-cur_dir=$(pwd)
+set -e
 
 ############################################
-# 0. AnyTLS 参数（新增）
+# AnyTLS + V2bX SAFE INSTALL (FINAL PACK)
 ############################################
+if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "[ERROR] 端口 80 已被占用，安装退出。"
+  exit 1
+fi
 
 API_HOST="$1"
 API_KEY="$2"
 NODE_ID="$3"
 certdomain="$4"
+ACME_EMAIL="$5"
 
-if [[ -z "$API_HOST" ]]; then
-  read -p "API_HOST: " API_HOST
+if [[ -z "$API_HOST" ]]; then read -p "API_HOST: " API_HOST; fi
+if [[ -z "$API_KEY" ]]; then read -p "API_KEY: " API_KEY; fi
+if [[ -z "$NODE_ID" ]]; then read -p "NODE_ID: " NODE_ID; fi
+if [[ -z "$certdomain" ]]; then read -p "certdomain: " certdomain; fi
+
+if [[ -z "$ACME_EMAIL" ]]; then
+  ACME_EMAIL="v2bx@github.com"
 fi
 
-if [[ -z "$API_KEY" ]]; then
-  read -p "API_KEY: " API_KEY
+echo "==== INSTALL START ===="
+echo "DOMAIN: $certdomain"
+echo "EMAIL : $ACME_EMAIL"
+
+read -p
+echo "确认后请回车继续"
+############################################
+# deps
+############################################
+
+if command -v apt &>/dev/null; then
+  apt update -y
+  apt install -y curl jq cron socat openssl unzip
+elif command -v yum &>/dev/null; then
+  yum install -y curl jq cronie socat openssl unzip
 fi
-
-if [[ -z "$NODE_ID" ]]; then
-  read -p "NODE_ID: " NODE_ID
-fi
-
-if [[ -z "$certdomain" ]]; then
-  read -p "certdomain: " certdomain
-fi
-
-echo ""
-echo "=============================="
-echo "AnyTLS 安装参数确认"
-echo "API_HOST   = $API_HOST"
-echo "API_KEY    = $API_KEY"
-echo "NODE_ID    = $NODE_ID"
-echo "certdomain = $certdomain"
-echo "=============================="
-echo ""
-
-read -p "回车继续安装 V2bX..." _
-
-############################################
-# check root
-############################################
-
-[[ $EUID -ne 0 ]] && echo -e "${red}错误：${plain} 必须使用root用户运行此脚本！\n" && exit 1
-
-############################################
-# check os
-############################################
-
-if [[ -f /etc/redhat-release ]]; then
-    release="centos"
-elif cat /etc/issue | grep -Eqi "alpine"; then
-    release="alpine"
-elif cat /etc/issue | grep -Eqi "debian"; then
-    release="debian"
-elif cat /etc/issue | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /etc/issue | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version | grep -Eqi "debian"; then
-    release="debian"
-elif cat /proc/version | grep -Eqi "ubuntu"; then
-    release="ubuntu"
-elif cat /proc/version | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
-    release="centos"
-elif cat /proc/version | grep -Eqi "arch"; then
-    release="arch"
-else
-    echo -e "${red}未检测到系统版本${plain}\n" && exit 1
-fi
-
-arch=$(uname -m)
-
-if [[ $arch == "x86_64" || $arch == "x64" || $arch == "amd64" ]]; then
-    arch="64"
-elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
-    arch="arm64-v8a"
-else
-    arch="64"
-fi
-
-############################################
-# install base
-############################################
-
-install_base() {
-    if [[ x"${release}" == x"centos" ]]; then
-        yum install epel-release wget curl unzip tar crontabs socat ca-certificates jq -y
-    elif [[ x"${release}" == x"debian" || x"${release}" == x"ubuntu" ]]; then
-        apt-get update -y
-        apt install wget curl unzip tar cron socat ca-certificates jq -y
-    fi
-}
 
 ############################################
 # install V2bX
 ############################################
 
-install_V2bX() {
-
-    rm -rf /usr/local/V2bX/
-    mkdir -p /usr/local/V2bX/
-    cd /usr/local/V2bX/
-
-    last_version=$(curl -Ls "https://api.github.com/repos/q42602736/V2BX-malio/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-
-    wget -q -O V2bX.zip https://github.com/q42602736/V2BX-malio/releases/download/${last_version}/V2bX-linux-${arch}.zip
-
-    unzip -o V2bX.zip
-    chmod +x V2bX
-
-    mkdir -p /etc/V2bX/
-    cp -f config.json /etc/V2bX/ 2>/dev/null
-    cp -f dns.json /etc/V2bX/ 2>/dev/null
-    cp -f route.json /etc/V2bX/ 2>/dev/null
-
-    # systemd
-    wget -q -O /etc/systemd/system/V2bX.service https://github.com/wyx2685/V2bX-script/raw/master/V2bX.service
-    systemctl daemon-reload
-    systemctl enable V2bX
-
-}
+bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/refs/heads/main/install.sh)
 
 ############################################
-# AnyTLS 自动配置（新增核心）
+# dirs
 ############################################
-
-setup_anytls() {
 
 CONFIG_DIR="/etc/V2bX"
-CONFIG_FILE="${CONFIG_DIR}/config.json"
 SSL_DIR="/etc/ssl"
+mkdir -p $CONFIG_DIR $SSL_DIR
 
-mkdir -p $SSL_DIR
+############################################
+# node config
+############################################
 
 NODE_JSON=$(curl -s -H "Authorization: ${API_KEY}" \
 "${API_HOST}/api/v1/node/${NODE_ID}/config")
 
-PORT=$(echo $NODE_JSON | jq -r '.port')
-UUID=$(echo $NODE_JSON | jq -r '.uuid')
+PORT=$(echo "$NODE_JSON" | jq -r '.port')
+UUID=$(echo "$NODE_JSON" | jq -r '.uuid')
 
-cat > $CONFIG_FILE <<EOF
+############################################
+# fallback cert (SAFE MODE)
+############################################
+
+openssl req -x509 -nodes -newkey rsa:2048 \
+-keyout ${SSL_DIR}/${certdomain}.key \
+-out ${SSL_DIR}/${certdomain}.crt \
+-subj "/CN=${certdomain}" \
+-days 3650
+
+############################################
+# config.json (FIXED STRUCTURE)
+############################################
+
+cat > ${CONFIG_DIR}/config.json <<EOF
 {
-  "inbounds": [{
-    "port": ${PORT},
-    "protocol": "anytls",
-    "settings": {
-      "clients": [{ "id": "${UUID}" }]
+    "Log": {
+        "Level": "debug",
+        "Output": ""
     },
-    "streamSettings": {
-      "network": "tcp",
-      "security": "tls",
-      "tlsSettings": {
-        "serverName": "${certdomain}",
-        "certificates": [{
-          "certificateFile": "${SSL_DIR}/${certdomain}.crt",
-          "keyFile": "${SSL_DIR}/${certdomain}.key"
+    "Cores": [
+    {
+        "Type": "sing",
+        "Log": {
+            "Level": "error",
+            "Timestamp": true
+        },
+        "NTP": {
+            "Enable": false,
+            "Server": "time.apple.com",
+            "ServerPort": 0
+        },
+        "OriginalPath": "/etc/V2bX/sing_origin.json"
+    }],
+    "Nodes": [{
+            "Core": "sing",
+            "ApiHost": "${API_HOST}",
+            "ApiKey": "${API_KEY}",
+            "NodeID": ${NODE_ID},
+            "NodeType": "anytls",
+            "Timeout": 30,
+            "ListenIP": "::",
+            "SendIP": "0.0.0.0",
+            "DeviceOnlineMinTraffic": 200,
+            "MinReportTraffic": 0,
+            "TCPFastOpen": false,
+            "SniffEnabled": true,
+            "CertConfig": {
+                "CertMode": "http",
+                "RejectUnknownSni": false,
+                "CertDomain": "${certdomain}",
+                "CertFile": "${SSL_DIR}/${certdomain}.crt",
+                "KeyFile": "${SSL_DIR}/${certdomain}.key",
+                "Email": "${ACME_EMAIL}"
+                "Provider": "cloudflare",
+                "DNSEnv": {
+                    "EnvName": "env1"
+                }
+            }
         }]
-      }
-    }
-  }],
-  "outbounds": [{ "protocol": "freedom" }]
 }
+
 EOF
 
 ############################################
-# ACME 自动续期（关键）
+# sing_origin.json
+############################################
+
+dnsstrategy="prefer_ipv4"
+
+   cat <<EOF > /etc/V2bX/sing_origin.json
+{
+  "dns": {
+    "servers": [
+      {
+        "tag": "cf",
+        "address": "1.1.1.1"
+      }
+    ],
+    "strategy": "$dnsstrategy"
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct",
+      "domain_resolver": {
+        "server": "cf",
+        "strategy": "$dnsstrategy"
+      }
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "ip_is_private": true,
+        "outbound": "block"
+      },
+      {
+        "domain_regex": [
+            "(api|ps|sv|offnavi|newvector|ulog.imap|newloc)(.map|).(baidu|n.shifen).com",
+            "(.+.|^)(360|so).(cn|com)",
+            "(Subject|HELO|SMTP)",
+            "(torrent|.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=)",
+            "(^.@)(guerrillamail|guerrillamailblock|sharklasers|grr|pokemail|spam4|bccto|chacuo|027168).(info|biz|com|de|net|org|me|la)",
+            "(.?)(xunlei|sandai|Thunder|XLLiveUD)(.)",
+            "(..||)(dafahao|mingjinglive|botanwang|minghui|dongtaiwang|falunaz|epochtimes|ntdtv|falundafa|falungong|wujieliulan|zhengjian).(org|com|net)",
+            "(ed2k|.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
+            "(.+.|^)(360).(cn|com|net)",
+            "(.*.||)(guanjia.qq.com|qqpcmgr|QQPCMGR)",
+            "(.*.||)(rising|kingsoft|duba|xindubawukong|jinshanduba).(com|net|org)",
+            "(.*.||)(netvigator|torproject).(com|cn|net|org)",
+            "(..||)(visa|mycard|gash|beanfun|bank).",
+            "(.*.||)(gov|12377|12315|talk.news.pts.org|creaders|zhuichaguoji|efcc.org|cyberpolice|aboluowang|tuidang|epochtimes|zhengjian|110.qq|mingjingnews|inmediahk|xinsheng|breakgfw|chengmingmag|jinpianwang|qi-gong|mhradio|edoors|renminbao|soundofhope|xizang-zhiye|bannedbook|ntdtv|12321|secretchina|dajiyuan|boxun|chinadigitaltimes|dwnews|huaglad|oneplusnews|epochweekly|cn.rfi).(cn|com|org|net|club|net|fr|tw|hk|eu|info|me)",
+            "(.*.||)(miaozhen|cnzz|talkingdata|umeng).(cn|com)",
+            "(.*.||)(mycard).(com|tw)",
+            "(.*.||)(gash).(com|tw)",
+            "(.bank.)",
+            "(.*.||)(pincong).(rocks)",
+            "(.*.||)(taobao).(com)",
+            "(.*.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126).(com|cloud|fun|cn|gs|xyz|cc)",
+            "(flows|miaoko).(pages).(dev)"
+        ],
+        "outbound": "block"
+      },
+      {
+        "outbound": "direct",
+        "network": [
+          "udp","tcp"
+        ]
+      }
+    ]
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true
+    }
+  }
+}
+EOF
+
+
+############################################
+# ACME SAFE
 ############################################
 
 ACME=~/.acme.sh/acme.sh
@@ -180,33 +221,26 @@ if ! command -v $ACME &>/dev/null; then
   curl https://get.acme.sh | sh
 fi
 
-$ACME --install-cronjob
+set +e
+
+$ACME --set-default-ca --server letsencrypt >/dev/null 2>&1
+$ACME --register-account -m $ACME_EMAIL >/dev/null 2>&1
+$ACME --install-cronjob >/dev/null 2>&1
 
 $ACME --issue -d ${certdomain} --standalone --keylength ec-256 --force
 
-$ACME --install-cert \
--d ${certdomain} \
---fullchain-file ${SSL_DIR}/${certdomain}.crt \
---key-file ${SSL_DIR}/${certdomain}.key \
---reloadcmd "systemctl restart V2bX"
+if [[ $? -eq 0 ]]; then
+  $ACME --install-cert \
+    -d ${certdomain} \
+    --fullchain-file ${SSL_DIR}/${certdomain}.crt \
+    --key-file ${SSL_DIR}/${certdomain}.key \
+    --reloadcmd "systemctl restart V2bX"
+fi
 
-}
+set -e
 
-############################################
-# main
-############################################
+systemctl restart V2bX || true
 
-echo -e "${green}开始安装 V2bX + AnyTLS${plain}"
+v2bx log
 
-install_base
-install_V2bX
-
-############################################
-# ⭐ 关键：安装完成后再做 AnyTLS
-############################################
-
-setup_anytls
-
-systemctl restart V2bX
-
-echo -e "${green}安装完成：AnyTLS + V2bX 已就绪${plain}"
+echo "INSTALL DONE"
