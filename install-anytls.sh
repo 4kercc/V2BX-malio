@@ -29,7 +29,7 @@ echo "==== INSTALL START ===="
 echo "DOMAIN: $certdomain"
 echo "EMAIL : $ACME_EMAIL"
 
-read -p
+read -p check
 echo "确认后请回车继续"
 ############################################
 # deps
