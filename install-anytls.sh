@@ -29,7 +29,6 @@ echo "==== INSTALL START ===="
 echo "DOMAIN: $certdomain"
 echo "EMAIL : $ACME_EMAIL"
 
-read -p check
 echo "确认后请回车继续"
 ############################################
 # deps
@@ -127,7 +126,6 @@ cat > ${CONFIG_DIR}/config.json <<EOF
             }
         }]
 }
-
 EOF
 
 ############################################
