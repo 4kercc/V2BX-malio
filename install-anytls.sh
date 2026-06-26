@@ -118,7 +118,7 @@ cat > ${CONFIG_DIR}/config.json <<EOF
                 "CertDomain": "${certdomain}",
                 "CertFile": "${SSL_DIR}/${certdomain}.crt",
                 "KeyFile": "${SSL_DIR}/${certdomain}.key",
-                "Email": "${ACME_EMAIL}"
+                "Email": "${ACME_EMAIL}",
                 "Provider": "cloudflare",
                 "DNSEnv": {
                     "EnvName": "env1"
