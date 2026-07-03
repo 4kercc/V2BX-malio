@@ -522,6 +522,16 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 	}
 
 	if handler == nil {
+		if inTag != "" {
+			if h := d.ohm.GetHandler(inTag); h != nil {
+				isPickRoute = 3
+				errors.LogInfo(ctx, "taking paired outbound [", inTag, "] for [", destination, "]")
+				handler = h
+			}
+		}
+	}
+
+	if handler == nil {
 		handler = d.ohm.GetDefaultHandler()
 	}
 
@@ -541,6 +551,8 @@ func (d *DefaultDispatcher) routedDispatch(ctx context.Context, link *transport.
 				accessMessage.Detour = inTag + " ==> " + tag
 			} else if isPickRoute == 2 {
 				accessMessage.Detour = inTag + " -> " + tag
+			} else if isPickRoute == 3 {
+				accessMessage.Detour = inTag + " => " + tag
 			} else {
 				accessMessage.Detour = inTag + " >> " + tag
 			}
