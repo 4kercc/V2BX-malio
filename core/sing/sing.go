@@ -84,7 +84,7 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 
 		for _, nodeConf := range c.SingConfig.NodesConfig {
 			sendIP := nodeConf.Options.SendIP
-			if sendIP == "" || sendIP == "0.0.0.0" {
+			if sendIP == "" || sendIP == "0.0.0.0" || sendIP == "::" {
 				continue
 			}
 			addr, parseErr := netip.ParseAddr(sendIP)

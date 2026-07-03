@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FlClash 下载与使用指南</title>
+
+<style>
+body {
+  margin:0;
+  font-family: Arial;
+  background:#0f172a;
+  color:#e5e7eb;
+}
+
+header{
+  padding:50px 20px;
+  text-align:center;
+  background:linear-gradient(135deg,#1e293b,#0f172a);
+}
+
+h1{margin:0;font-size:42px;}
+
+.container{
+  max-width:1000px;
+  margin:auto;
+  padding:20px;
+}
+
+.card{
+  background:#111827;
+  padding:20px;
+  border-radius:12px;
+  margin-bottom:20px;
+  border:1px solid #1f2937;
+}
+
+.btn{
+  display:block;
+  padding:12px;
+  margin:8px 0;
+  background:#2563eb;
+  color:#fff;
+  text-decoration:none;
+  border-radius:8px;
+  text-align:center;
+}
+
+.btn:hover{background:#1d4ed8;}
+
+.btn.recommend{
+  background:#059669;
+  border:2px solid #34d399;
+  font-weight:bold;
+}
+
+.btn.recommend:hover{background:#047857;}
+
+.tag{color:#38bdf8;font-weight:bold;}
+
+.step{
+  background:#0b1220;
+  padding:12px;
+  border-left:3px solid #38bdf8;
+  margin:8px 0;
+  border-radius:8px;
+}
+
+/* 系统检测提示 */
+.os-tip{
+  background:#1e293b;
+  border:1px solid #38bdf8;
+  border-radius:10px;
+  padding:14px 20px;
+  margin-bottom:20px;
+  display:none;
+  font-size:15px;
+  line-height:1.6;
+}
+.os-tip.show{display:block;}
+.os-tip .highlight{color:#34d399;font-weight:bold;}
+
+img{
+  width:100%;
+  border-radius:10px;
+  margin-top:10px;
+  border:1px solid #1f2937;
+}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>FlClash</h1>
+<p>自动获取最新版 · 分类下载 · 使用引导</p>
+</header>
+
+<div class="container">
+
+<!-- 系统检测提示 -->
+<div class="os-tip" id="osTip"></div>
+
+<!-- 版本 -->
+<div class="card">
+<h2>📦 最新版本</h2>
+<p>版本：<span id="version" class="tag">加载中...</span></p>
+<p>更新时间：<span id="date">加载中...</span></p>
+</div>
+
+<!-- 下载 -->
+<div class="card">
+<h2>⬇️ 下载（按系统选择）</h2>
+
+<h3>🤖 Android</h3>
+<div id="android"></div>
+
+<h3>🪟 Windows</h3>
+<div id="windows"></div>
+
+<h3>🍎 macOS</h3>
+<div id="mac"></div>
+
+<h3>📦 其他</h3>
+<a class="btn" href="https://gh-proxy.com/https://github.com/chen08209/FlClash/releases" target="_blank">
+进入 GitHub Releases 查看全部版本（加速）
+</a>
+
+</div>
+
+<!-- 教程 -->
+<div class="card">
+<h2>⚙️ 使用教程（通用）</h2>
+
+<div class="step">1. 下载对应系统版本并安装程序</div>
+
+<div class="step">2. 打开 FlClash</div>
+
+<div class="step">3. 左侧菜单 → 点击【配置】（第三个按钮）</div>
+
+<div class="step">4. 右下角点击【添加配置】</div>
+
+<div class="step">5. 选择：URL 导入</div>
+
+<div class="step">
+6. 登录用户中心，复制 Clash 订阅链接，粘贴进去
+</div>
+
+<div class="step">7. 点击【更新配置】</div>
+
+<div class="step">
+8. 更新成功后界面如下（示意图，后续你替换）：
+<img src="https://via.placeholder.com/900x450?text=Config+Success+Screenshot" />
+</div>
+
+<div class="step">9. 切换到【仪表盘】</div>
+
+<div class="step">
+10. 出站模式选择：
+<ul>
+<li>全局（推荐新手）</li>
+<li>规则（进阶用户）</li>
+</ul>
+</div>
+
+<div class="step">11. 切换到【代理页面】</div>
+
+<div class="step">12. 点击右下角【延迟测试】</div>
+
+<div class="step">13. 选择节点 → 点击启用</div>
+
+<div class="step">14. 返回仪表盘 → 点击右下角【启动】</div>
+
+<div class="step">15. 配置完成</div>
+
+</div>
+
+</div>
+
+<script>
+
+/* ========== 系统检测 ========== */
+function detectOS(){
+  const ua = navigator.userAgent.toLowerCase();
+  if(/android/.test(ua))           return "android";
+  if(/iphone|ipad|ipod/.test(ua)) return "ios";
+  if(/mac os|macintosh/.test(ua))  return "mac";
+  if(/win/.test(ua))               return "windows";
+  if(/linux/.test(ua))             return "linux";
+  return "unknown";
+}
+
+(function(){
+  const os = detectOS();
+  const tip = document.getElementById("osTip");
+  const map = {
+    android: "🤖 检测到您正在使用 <span class='highlight'>Android</span> 设备，推荐下载 <span class='highlight'>Android ARMv8（64位）</span> 版本",
+    windows: "🪟 检测到您正在使用 <span class='highlight'>Windows</span> 系统，推荐下载 <span class='highlight'>Windows x86（64位）</span> 版本",
+    mac:     "🍎 检测到您正在使用 <span class='highlight'>macOS</span> 设备，推荐下载 <span class='highlight'>macOS ARM（M1/M2/M3）</span> 版本（Intel Mac 请选下方 Intel 版本）",
+    ios:     "📱 检测到您正在使用 <span class='highlight'>iOS</span> 设备，FlClash 暂不支持 iOS，请使用其他兼容客户端",
+    linux:   "🐧 检测到您正在使用 <span class='highlight'>Linux</span> 系统，请在「其他」中查找 Linux 版本",
+    unknown: "💻 请手动选择您的系统版本进行下载"
+  };
+  tip.innerHTML = map[os] || map.unknown;
+  tip.classList.add("show");
+})();
+
+/* ========== 原始下载逻辑（未改动） ========== */
+const PROXY = "https://gh-proxy.com/";
+const repo="chen08209/FlClash";
+
+async function load(){
+  const res=await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
+  const data=await res.json();
+
+  document.getElementById("version").innerText=data.tag_name;
+  document.getElementById("date").innerText=
+    new Date(data.published_at).toLocaleString();
+
+  const android=document.getElementById("android");
+  const windows=document.getElementById("windows");
+  const mac=document.getElementById("mac");
+
+  const userOS = detectOS();
+
+  data.assets.forEach(a=>{
+
+    const name=a.name.toLowerCase();
+    const url=PROXY + a.browser_download_url;
+
+    let btn=document.createElement("a");
+    btn.className="btn";
+    btn.href=url;
+    btn.target="_blank";
+
+    // Android
+    if(name.includes("android")||name.includes("apk")){
+      if(name.includes("v7")||name.includes("armeabi")){
+        btn.innerText="下载 Android ARMv7 (32位)";
+        android.appendChild(btn);
+      }
+      else if(name.includes("v8")||name.includes("arm64")){
+        btn.innerText="下载 Android ARMv8 (64位)";
+        if(userOS==="android") btn.classList.add("recommend");
+        android.appendChild(btn);
+      }
+    }
+
+    // Windows
+    else if(name.includes("windows")||name.includes("exe")){
+      if(name.includes("arm")){
+        btn.innerText="下载 Windows ARM";
+        windows.appendChild(btn);
+      }else{
+        btn.innerText="下载 Windows x86";
+        if(userOS==="windows") btn.classList.add("recommend");
+        windows.appendChild(btn);
+      }
+    }
+
+    // mac
+    else if(name.includes("mac")||name.includes("dmg")){
+      if(name.includes("arm")||name.includes("apple")||name.includes("silicon")){
+        btn.innerText="下载 macOS ARM (M1/M2)";
+        if(userOS==="mac") btn.classList.add("recommend");
+        mac.appendChild(btn);
+      }else{
+        btn.innerText="下载 macOS Intel (x86)";
+        mac.appendChild(btn);
+      }
+    }
+
+  });
+}
+
+load();
+
+</script>
+
+</body>
+</html>

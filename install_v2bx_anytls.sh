@@ -23,11 +23,39 @@ read -p "ACME Email (默认 v2bx@github.com): " ACME_EMAIL
 ACME_EMAIL=${ACME_EMAIL:-v2bx@github.com}
 
 ############################################
+# 自动读取本机公网IP（IPv4 + IPv6）
+############################################
+echo ""
+echo "==== 检测本机公网IP ===="
+# IPv4：排除 127.x 回环
+mapfile -t PUB_IPS4 < <(ip -4 addr show | grep -oP 'inet \K[\d.]+' | grep -v '^127\.' | sort -u)
+# IPv6：排除 ::1 回环和 fe80:: 链路本地地址
+mapfile -t PUB_IPS6 < <(ip -6 addr show | grep -oP 'inet6 \K[0-9a-f:]+' | grep -v '^::1$' | grep -iv '^fe80' | sort -u)
+
+# 合并为统一列表
+PUB_IPS=("${PUB_IPS4[@]}" "${PUB_IPS6[@]}")
+
+if [[ ${#PUB_IPS[@]} -eq 0 ]]; then
+  echo "  未检测到公网IP，将使用 0.0.0.0"
+else
+  echo "  检测到 ${#PUB_IPS[@]} 个IP："
+  for ((j=0; j<${#PUB_IPS[@]}; j++)); do
+    if [[ "${PUB_IPS[$j]}" == *:* ]]; then
+      echo "    [$((j+1))] ${PUB_IPS[$j]}  (IPv6)"
+    else
+      echo "    [$((j+1))] ${PUB_IPS[$j]}  (IPv4)"
+    fi
+  done
+  echo "    [0] 0.0.0.0 (不绑定，使用默认路由)"
+fi
+
+############################################
 # 多节点参数采集
 ############################################
 echo ""
 echo "==== 节点配置 ===="
-echo "多个节点只有 NodeID / 域名 / SendIP 不同，其余参数共享"
+echo "提示：ListenIP 建议填 0.0.0.0（IPv4监听全部）或 :: （IPv6+IPv4双栈监听全部）"
+echo "      SendIP 填哪个IP，流量就从哪个IP出"
 read -p "节点数量: " NODE_COUNT
 
 declare -a NODE_IDS DOMAINS SEND_IPS LISTEN_IPS
@@ -38,16 +66,29 @@ for ((i=1; i<=NODE_COUNT; i++)); do
   read -p "  NodeID: " nid
   read -p "  域名 (certdomain): " dom
 
-  # 单节点无需绑定IP，默认 0.0.0.0
-  if [[ $NODE_COUNT -eq 1 ]]; then
-    lip="0.0.0.0"
-    sip="0.0.0.0"
+  # ListenIP：默认 0.0.0.0
+  read -p "  ListenIP [0.0.0.0]: " lip
+  lip=${lip:-0.0.0.0}
+
+  # SendIP：支持序号快捷输入
+  echo -n "  SendIP"
+  if [[ ${#PUB_IPS[@]} -gt 1 ]]; then
+    echo -n " (输入IP或选序号 1-${#PUB_IPS[@]}, 0=0.0.0.0, 回车=自动)"
   else
-    read -p "  ListenIP (默认 0.0.0.0): " lip
-    lip=${lip:-0.0.0.0}
-    read -p "  SendIP (默认 0.0.0.0): " sip
-    sip=${sip:-0.0.0.0}
+    echo -n " (回车=0.0.0.0)"
   fi
+  echo -n ": "
+  read sip
+
+  # 解析 SendIP：支持序号、IP、空
+  if [[ -z "$sip" ]]; then
+    sip="0.0.0.0"
+  elif [[ "$sip" == "0" ]]; then
+    sip="0.0.0.0"
+  elif [[ "$sip" =~ ^[0-9]+$ ]] && [[ $sip -ge 1 ]] && [[ $sip -le ${#PUB_IPS[@]} ]]; then
+    sip="${PUB_IPS[$((sip-1))]}"
+  fi
+  # 否则原样使用（用户手打了IP）
 
   NODE_IDS+=("$nid")
   DOMAINS+=("$dom")
