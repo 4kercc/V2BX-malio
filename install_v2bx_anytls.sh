@@ -11,7 +11,13 @@ NODE_ID="${3:-}"
 DOMAIN="${4:-}"
 
 USE_SELF_SIGNED=false
-if [[ "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
+# 如果处于命令行非交互模式（前3个参数齐全），但第4个参数未传或为 null/NULL，则默认使用自签证书
+if [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
+  if [[ -z "$DOMAIN" || "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
+    USE_SELF_SIGNED=true
+    DOMAIN="node${NODE_ID}.selfsigned.local"
+  fi
+elif [[ "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
   USE_SELF_SIGNED=true
   DOMAIN="node${NODE_ID:-1}.selfsigned.local"
 fi
@@ -32,7 +38,7 @@ if [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
   AUTO_INSTALL=true
   NODE_COUNT=1
   NODE_IDS=("$NODE_ID")
-  DOMAINS=("${DOMAIN:-node${NODE_ID}.example.com}")
+  DOMAINS=("$DOMAIN")
   LISTEN_IPS=("0.0.0.0")
   SEND_IPS=("0.0.0.0")
   ACME_EMAIL="v2bx@github.com"
