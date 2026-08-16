@@ -3,20 +3,28 @@
 set -e
 
 ############################################
-# AnyTLS + V2bX INSTALL (Multi-Node)
-############################################
-if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "[ERROR] 端口 80 已被占用，安装退出。"
-  exit 1
-fi
-
-############################################
 # 共用参数
 ############################################
 API_HOST="${1:-}"
 API_KEY="${2:-}"
 NODE_ID="${3:-}"
 DOMAIN="${4:-}"
+
+USE_SELF_SIGNED=false
+if [[ "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
+  USE_SELF_SIGNED=true
+  DOMAIN="node${NODE_ID:-1}.selfsigned.local"
+fi
+
+############################################
+# 端口80检查（仅在需要申请ACME证书时检查）
+############################################
+if [[ "$USE_SELF_SIGNED" != "true" ]]; then
+  if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "[ERROR] 端口 80 已被占用，无法申请 ACME 证书，安装退出。"
+    exit 1
+  fi
+fi
 
 declare -a NODE_IDS DOMAINS SEND_IPS LISTEN_IPS
 
@@ -165,6 +173,10 @@ gen_nodes() {
   for ((i=0; i<NODE_COUNT; i++)); do
     $first || echo ","
     first=false
+    local cert_mode="http"
+    if [[ "$USE_SELF_SIGNED" == "true" ]]; then
+      cert_mode="none"
+    fi
     cat <<EOF
     {
       "Core": "sing",
@@ -180,7 +192,7 @@ gen_nodes() {
       "TCPFastOpen": false,
       "SniffEnabled": true,
       "CertConfig": {
-        "CertMode": "http",
+        "CertMode": "${cert_mode}",
         "RejectUnknownSni": false,
         "CertDomain": "${DOMAINS[$i]}",
         "CertFile": "${SSL_DIR}/${DOMAINS[$i]}.crt",
@@ -308,32 +320,36 @@ EOF
 ############################################
 # ACME for all domains
 ############################################
-ACME=~/.acme.sh/acme.sh
+if [[ "$USE_SELF_SIGNED" == "true" ]]; then
+  echo "检测到使用自签证书模式 (域名为 null)，跳过 ACME 证书申请。"
+else
+  ACME=~/.acme.sh/acme.sh
 
-if ! command -v $ACME &>/dev/null; then
-  curl https://get.acme.sh | sh
-fi
-
-set +e
-
-$ACME --set-default-ca --server letsencrypt >/dev/null 2>&1
-$ACME --register-account -m $ACME_EMAIL >/dev/null 2>&1
-$ACME --install-cronjob >/dev/null 2>&1
-
-for dom in "${DOMAINS[@]}"; do
-  echo "申请 ACME 证书: $dom"
-  $ACME --issue -d ${dom} --standalone --keylength ec-256 --force
-
-  if [[ $? -eq 0 ]]; then
-    $ACME --install-cert \
-      -d ${dom} \
-      --fullchain-file ${SSL_DIR}/${dom}.crt \
-      --key-file ${SSL_DIR}/${dom}.key \
-      --reloadcmd "systemctl restart V2bX"
+  if ! command -v $ACME &>/dev/null; then
+    curl https://get.acme.sh | sh
   fi
-done
 
-set -e
+  set +e
+
+  $ACME --set-default-ca --server letsencrypt >/dev/null 2>&1
+  $ACME --register-account -m $ACME_EMAIL >/dev/null 2>&1
+  $ACME --install-cronjob >/dev/null 2>&1
+
+  for dom in "${DOMAINS[@]}"; do
+    echo "申请 ACME 证书: $dom"
+    $ACME --issue -d ${dom} --standalone --keylength ec-256 --force
+
+    if [[ $? -eq 0 ]]; then
+      $ACME --install-cert \
+        -d ${dom} \
+        --fullchain-file ${SSL_DIR}/${dom}.crt \
+        --key-file ${SSL_DIR}/${dom}.key \
+        --reloadcmd "systemctl restart V2bX"
+    fi
+  done
+
+  set -e
+fi
 
 ############################################
 # restart
