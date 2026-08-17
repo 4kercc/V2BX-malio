@@ -220,7 +220,7 @@ EOF
 cat > ${CONFIG_DIR}/config.json <<EOF
 {
   "Log": {
-    "Level": "debug",
+    "Level": "warn",
     "Output": ""
   },
   "Cores": [
@@ -356,6 +356,30 @@ else
 
   set -e
 fi
+
+############################################
+# 内存与系统性能优化 (针对小内存VPS优化Go运行时与系统内核)
+############################################
+echo "==== 配置内存优化与性能调优 ===="
+
+# 1. 调整 Linux 内核 swappiness 倾向，减少磁盘 Swap IO 阻塞
+if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
+  echo "vm.swappiness=10" >> /etc/sysctl.conf
+  sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
+fi
+
+# 2. 注入 Go 运行时内存限制与即时释放环境变量 (GOMEMLIMIT & GODEBUG)
+mkdir -p /etc/systemd/system/V2bX.service.d
+cat > /etc/systemd/system/V2bX.service.d/override.conf <<EOF
+[Service]
+Environment="GOMEMLIMIT=150MiB"
+Environment="GODEBUG=madvdontneed=1"
+EOF
+
+# 3. 添加每 5 天凌晨 3 点自动定时重启任务（防止内存碎片堆积）
+(crontab -l 2>/dev/null | grep -v "systemctl restart V2bX"; echo "0 3 */5 * * systemctl restart V2bX") | crontab - || true
+
+systemctl daemon-reload
 
 ############################################
 # restart
