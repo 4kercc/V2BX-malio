@@ -26,6 +26,8 @@ type Limiter struct {
 	SpeedLimit    int
 	UserOnlineIP  *sync.Map      // Key: TagUUID, value: {Key: Ip, value: Uid}
 	OldUserOnline *sync.Map      // Key: Ip, value: Uid
+	OldIPCount    map[int]int    // Key: Uid, value: number of IPs tracked in OldUserOnline (guarded by countMu)
+	countMu       sync.Mutex     // guards OldIPCount and the OldUserOnline swap in GetOnlineDevice
 	UUIDtoUID     map[string]int // Key: UUID, value: Uid
 	UserLimitInfo *sync.Map      // Key: TagUUID value: UserLimitInfo
 	SpeedLimiter  *sync.Map      // key: TagUUID, value: *ratelimit.Bucket
@@ -49,6 +51,7 @@ func AddLimiter(tag string, l *conf.LimitConfig, users []panel.UserInfo, aliveLi
 		SpeedLimiter:  new(sync.Map),
 		AliveList:     aliveList,
 		OldUserOnline: new(sync.Map),
+		OldIPCount:    make(map[int]int),
 	}
 	uuidmap := make(map[string]int)
 	for i := range users {
@@ -161,13 +164,8 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 			currentIPCount := l.countUserIPs(oldipMap)
 			// If this is a new ip
 			if _, loaded := oldipMap.LoadOrStore(ip, uid); !loaded {
-				oldIPCount := l.countOldUserIPs(uid)
-				if v, loaded := l.OldUserOnline.Load(ip); loaded {
-					if v.(int) == uid {
-						l.OldUserOnline.Delete(ip)
-						oldIPCount--
-					}
-				}
+				// O(1): take the tracked count and drop ip from the previous report if it belongs to this user
+				oldIPCount := l.consumeOldIP(uid, ip)
 				knownIPCount := currentIPCount
 				if aliveIp > knownIPCount {
 					knownIPCount = aliveIp
@@ -180,12 +178,10 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 					return nil, true
 				}
 			}
-		} else if v, ok := l.OldUserOnline.Load(ip); ok {
-			if v.(int) == uid {
-				l.OldUserOnline.Delete(ip)
-			}
+		} else if l.dropOldIP(uid, ip) {
+			// ip was reported in the previous cycle: first ip of this user this cycle is always accepted
 		} else {
-			knownIPCount := l.countOldUserIPs(uid)
+			knownIPCount := l.getOldIPCount(uid)
 			if aliveIp > knownIPCount {
 				knownIPCount = aliveIp
 			}
@@ -212,20 +208,28 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 
 func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
 	var onlineUser []panel.OnlineUser
-	l.OldUserOnline = new(sync.Map)
+	// Build the next snapshot first and swap atomically, so CheckLimit never
+	// observes a half-rebuilt OldUserOnline and device limits hold across reports.
+	newOld := new(sync.Map)
+	newCount := make(map[int]int)
 	l.UserOnlineIP.Range(func(key, value interface{}) bool {
 		taguuid := key.(string)
 		ipMap := value.(*sync.Map)
 		ipMap.Range(func(key, value interface{}) bool {
 			uid := value.(int)
 			ip := key.(string)
-			l.OldUserOnline.Store(ip, uid)
+			newOld.Store(ip, uid)
+			newCount[uid]++
 			onlineUser = append(onlineUser, panel.OnlineUser{UID: uid, IP: ip})
 			return true
 		})
 		l.UserOnlineIP.Delete(taguuid) // Reset online device
 		return true
 	})
+	l.countMu.Lock()
+	l.OldUserOnline = newOld
+	l.OldIPCount = newCount
+	l.countMu.Unlock()
 
 	return &onlineUser, nil
 }
@@ -243,19 +247,40 @@ func (l *Limiter) countUserIPs(ipMap *sync.Map) int {
 	return count
 }
 
-func (l *Limiter) countOldUserIPs(uid int) int {
-	if l.OldUserOnline == nil {
-		return 0
-	}
+// getOldIPCount returns the tracked number of IPs uid has in OldUserOnline in O(1).
+func (l *Limiter) getOldIPCount(uid int) int {
+	l.countMu.Lock()
+	defer l.countMu.Unlock()
+	return l.OldIPCount[uid]
+}
 
-	count := 0
-	l.OldUserOnline.Range(func(_, value interface{}) bool {
-		if value.(int) == uid {
-			count++
+// dropOldIP removes ip from OldUserOnline when it belongs to uid and keeps the
+// per-uid counter in sync. Reports whether the ip was previously tracked.
+func (l *Limiter) dropOldIP(uid int, ip string) bool {
+	l.countMu.Lock()
+	defer l.countMu.Unlock()
+	if v, loaded := l.OldUserOnline.Load(ip); loaded && v.(int) == uid {
+		l.OldUserOnline.Delete(ip)
+		if l.OldIPCount[uid] > 0 {
+			l.OldIPCount[uid]--
 		}
 		return true
-	})
-	return count
+	}
+	return false
+}
+
+// consumeOldIP drops ip from the previous report when owned by uid and returns
+// the user's remaining tracked IP count, atomically.
+func (l *Limiter) consumeOldIP(uid int, ip string) int {
+	l.countMu.Lock()
+	defer l.countMu.Unlock()
+	if v, loaded := l.OldUserOnline.Load(ip); loaded && v.(int) == uid {
+		l.OldUserOnline.Delete(ip)
+		if l.OldIPCount[uid] > 0 {
+			l.OldIPCount[uid]--
+		}
+	}
+	return l.OldIPCount[uid]
 }
 
 type UserIpList struct {

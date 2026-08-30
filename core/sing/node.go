@@ -420,5 +420,7 @@ func (b *Sing) DelNode(tag string) error {
 	if err != nil {
 		return fmt.Errorf("delete inbound error: %s", err)
 	}
+	// Note: the tag's TrafficCounter is intentionally kept across node reloads
+	// so traffic accumulated around the reload window is still reported.
 	return nil
 }

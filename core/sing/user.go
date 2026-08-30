@@ -165,5 +165,13 @@ func (b *Sing) DelUsers(users []panel.UserInfo, tag string, info *panel.NodeInfo
 	if err != nil {
 		return err
 	}
+	// Drop the removed users' traffic counters, otherwise stale entries
+	// accumulate in the hook for every expired/deleted user over time.
+	if v, ok := b.hookServer.counter.Load(tag); ok {
+		c := v.(*counter.TrafficCounter)
+		for i := range uuids {
+			c.Delete(uuids[i])
+		}
+	}
 	return nil
 }
