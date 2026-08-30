@@ -92,7 +92,12 @@ func (c *Controller) Start() error {
 	if err != nil {
 		return fmt.Errorf("add users error: %s", err)
 	}
-	log.WithField("tag", c.tag).Infof("Added %d new users", added)
+	log.WithFields(log.Fields{
+		"tag":    c.tag,
+		"type":   node.Type,
+		"listen": fmt.Sprintf("%s:%d", node.Common.Host, node.Common.ServerPort),
+		"users":  added,
+	}).Info("Node started, listening")
 	c.info = node
 	c.startTasks(node)
 	return nil

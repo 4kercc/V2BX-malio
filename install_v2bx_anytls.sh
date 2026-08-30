@@ -343,7 +343,7 @@ EOF
 cat > ${CONFIG_DIR}/config.json <<EOF
 {
   "Log": {
-    "Level": "warn",
+    "Level": "info",
     "Output": ""
   },
   "Cores": [
