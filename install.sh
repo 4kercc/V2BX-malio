@@ -227,7 +227,11 @@ EOF
     if [[ ! -f /etc/V2bX/custom_inbound.json ]]; then
         cp custom_inbound.json /etc/V2bX/
     fi
-    curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    if [[ -f V2bX.sh ]]; then
+        cp -f V2bX.sh /usr/bin/V2bX
+    else
+        curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/V2bX.sh || curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    fi
     chmod +x /usr/bin/V2bX
     if [ ! -L /usr/bin/v2bx ]; then
         ln -s /usr/bin/V2bX /usr/bin/v2bx
@@ -253,6 +257,12 @@ EOF
     echo "V2bX install      - 安装 V2bX"
     echo "V2bX uninstall    - 卸载 V2bX"
     echo "V2bX version      - 查看 V2bX 版本"
+    echo "------------------------------------------"
+    echo "快捷参数设置: "
+    echo "V2bX set host <url>      - 快捷设置 ApiHost"
+    echo "V2bX set key <key>       - 快捷设置 ApiKey"
+    echo "V2bX set id <node_id>    - 快捷设置 NodeID"
+    echo "V2bX set domain <domain> - 快捷设置 CertDomain"
     echo "------------------------------------------"
     # 首次安装询问是否生成配置文件
 

@@ -153,6 +153,78 @@ fi
 bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/refs/heads/main/install.sh)
 
 ############################################
+# 清理外部旧 WARP & redsocks 残留 (避免端口与路由冲突)
+############################################
+echo "==== 清理外部旧 WARP & redsocks 组件 ===="
+systemctl stop warp-svc redsocks 2>/dev/null || true
+systemctl disable warp-svc redsocks 2>/dev/null || true
+pkill -9 warp-svc redsocks 2>/dev/null || true
+# 清理旧的 iptables 劫持链
+for chain in WARP_GOOGLE WARP_CHATGPT WARP_NETFLIX; do
+  iptables -t nat -D OUTPUT -j "$chain" 2>/dev/null || true
+  iptables -t nat -F "$chain" 2>/dev/null || true
+  iptables -t nat -X "$chain" 2>/dev/null || true
+done
+
+############################################
+# 自动生成/注册 Cloudflare WARP WireGuard 凭证
+############################################
+WARP_CONF_FILE="/etc/V2bX/warp_account.json"
+WARP_PRIVATE_KEY=""
+WARP_IPV4=""
+WARP_IPV6=""
+
+if [[ -f "$WARP_CONF_FILE" ]]; then
+  WARP_PRIVATE_KEY=$(jq -r '.private_key // empty' "$WARP_CONF_FILE" 2>/dev/null || true)
+  WARP_IPV4=$(jq -r '.v4 // empty' "$WARP_CONF_FILE" 2>/dev/null || true)
+  WARP_IPV6=$(jq -r '.v6 // empty' "$WARP_CONF_FILE" 2>/dev/null || true)
+fi
+
+if [[ -z "$WARP_PRIVATE_KEY" || -z "$WARP_IPV4" ]]; then
+  echo "正在自动注册 Cloudflare WARP 免费账号..."
+  mkdir -p /etc/V2bX
+  # 优先使用 openssl 生成私钥，若无 wg 则 fallback
+  if command -v wg &>/dev/null; then
+    RAW_PRIV=$(wg genkey)
+    RAW_PUB=$(echo "$RAW_PRIV" | wg pubkey)
+  else
+    RAW_PRIV=$(openssl rand -base64 32)
+    # 通过 API 注册时传递公钥
+    RAW_PUB=$(echo "$RAW_PRIV" | openssl pkey -pubout -outform DER 2>/dev/null | tail -c 32 | base64 2>/dev/null || echo "")
+  fi
+
+  if [[ -n "$RAW_PRIV" ]]; then
+    WARP_REG_RES=$(curl -s -X POST "https://api.cloudflareclient.com/v0a2158/reg" \
+      -H "Content-Type: application/json; charset=UTF-8" \
+      -H "User-Agent: okhttp/3.12.1" \
+      -d "{\"key\":\"${RAW_PUB}\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"type\":\"Android\",\"locale\":\"zh_CN\"}" 2>/dev/null || true)
+
+    WARP_IPV4=$(echo "$WARP_REG_RES" | jq -r '.result.config.interface.addresses.v4 // empty' 2>/dev/null || true)
+    WARP_IPV6=$(echo "$WARP_REG_RES" | jq -r '.result.config.interface.addresses.v6 // empty' 2>/dev/null || true)
+    
+    if [[ -n "$WARP_IPV4" ]]; then
+      WARP_PRIVATE_KEY="$RAW_PRIV"
+      cat > "$WARP_CONF_FILE" <<EOF
+{
+  "private_key": "${WARP_PRIVATE_KEY}",
+  "v4": "${WARP_IPV4}",
+  "v6": "${WARP_IPV6}"
+}
+EOF
+      echo "✓ Cloudflare WARP 账号注册成功 (IPv4: $WARP_IPV4)"
+    fi
+  fi
+fi
+
+# 如果注册未成功，使用兼容的预置凭证模板以确保服务能正常启动
+if [[ -z "$WARP_PRIVATE_KEY" || -z "$WARP_IPV4" ]]; then
+  WARP_PRIVATE_KEY="aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
+  WARP_IPV4="172.16.0.2/32"
+  WARP_IPV6="2606:4700:110:8a9a:b0d:20e:a5b4:6b9d/128"
+  echo "⚠️ WARP 自动注册受限，使用预设模板。"
+fi
+
+############################################
 # dirs
 ############################################
 CONFIG_DIR="/etc/V2bX"
@@ -270,6 +342,30 @@ cat <<EOF > /etc/V2bX/sing_origin.json
       }
     },
     {
+      "type": "wireguard",
+      "tag": "warp-out",
+      "server": "162.159.192.1",
+      "server_port": 2408,
+      "local_address": [
+        "${WARP_IPV4}",
+        "${WARP_IPV6}"
+      ],
+      "private_key": "${WARP_PRIVATE_KEY}",
+      "peer_public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+    },
+    {
+      "type": "urltest",
+      "tag": "warp-auto",
+      "outbounds": [
+        "warp-out",
+        "direct"
+      ],
+      "url": "https://www.google.com/generate_204",
+      "interval": "1m",
+      "tolerance": 50,
+      "idle_timeout": "30m"
+    },
+    {
       "type": "block",
       "tag": "block"
     }
@@ -279,6 +375,34 @@ cat <<EOF > /etc/V2bX/sing_origin.json
       {
         "ip_is_private": true,
         "outbound": "block"
+      },
+      {
+        "domain_suffix": [
+          "google.com",
+          "google.com.hk",
+          "googleapis.com",
+          "googlevideo.com",
+          "gstatic.com",
+          "youtube.com",
+          "ytimg.com",
+          "openai.com",
+          "chatgpt.com",
+          "oaistatic.com",
+          "oaiusercontent.com",
+          "claude.ai",
+          "anthropic.com",
+          "netflix.com",
+          "netflix.net",
+          "nflximg.net",
+          "nflxvideo.net"
+        ],
+        "domain_keyword": [
+          "openai",
+          "chatgpt",
+          "anthropic",
+          "claude"
+        ],
+        "outbound": "warp-auto"
       },
       {
         "domain_regex": [
