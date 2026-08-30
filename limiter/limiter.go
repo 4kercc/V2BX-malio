@@ -158,17 +158,26 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 		// If any device is online
 		if v, loaded := l.UserOnlineIP.LoadOrStore(taguuid, newipMap); loaded {
 			oldipMap := v.(*sync.Map)
+			currentIPCount := l.countUserIPs(oldipMap)
 			// If this is a new ip
 			if _, loaded := oldipMap.LoadOrStore(ip, uid); !loaded {
+				oldIPCount := l.countOldUserIPs(uid)
 				if v, loaded := l.OldUserOnline.Load(ip); loaded {
 					if v.(int) == uid {
 						l.OldUserOnline.Delete(ip)
+						oldIPCount--
 					}
-				} else if deviceLimit > 0 {
-					if deviceLimit <= aliveIp {
-						oldipMap.Delete(ip)
-						return nil, true
-					}
+				}
+				knownIPCount := currentIPCount
+				if aliveIp > knownIPCount {
+					knownIPCount = aliveIp
+				}
+				if oldIPCount > knownIPCount {
+					knownIPCount = oldIPCount
+				}
+				if deviceLimit > 0 && deviceLimit <= knownIPCount {
+					oldipMap.Delete(ip)
+					return nil, true
 				}
 			}
 		} else if v, ok := l.OldUserOnline.Load(ip); ok {
@@ -176,11 +185,13 @@ func (l *Limiter) CheckLimit(taguuid string, ip string, isTcp bool, noSSUDP bool
 				l.OldUserOnline.Delete(ip)
 			}
 		} else {
-			if deviceLimit > 0 {
-				if deviceLimit <= aliveIp {
-					l.UserOnlineIP.Delete(taguuid)
-					return nil, true
-				}
+			knownIPCount := l.countOldUserIPs(uid)
+			if aliveIp > knownIPCount {
+				knownIPCount = aliveIp
+			}
+			if deviceLimit > 0 && deviceLimit <= knownIPCount {
+				l.UserOnlineIP.Delete(taguuid)
+				return nil, true
 			}
 		}
 	}
@@ -217,6 +228,34 @@ func (l *Limiter) GetOnlineDevice() (*[]panel.OnlineUser, error) {
 	})
 
 	return &onlineUser, nil
+}
+
+func (l *Limiter) countUserIPs(ipMap *sync.Map) int {
+	if ipMap == nil {
+		return 0
+	}
+
+	count := 0
+	ipMap.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+func (l *Limiter) countOldUserIPs(uid int) int {
+	if l.OldUserOnline == nil {
+		return 0
+	}
+
+	count := 0
+	l.OldUserOnline.Range(func(_, value interface{}) bool {
+		if value.(int) == uid {
+			count++
+		}
+		return true
+	})
+	return count
 }
 
 type UserIpList struct {
