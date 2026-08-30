@@ -153,18 +153,69 @@ fi
 bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/refs/heads/main/install.sh)
 
 ############################################
-# 清理外部旧 WARP & redsocks 残留 (避免端口与路由冲突)
+# 检测并自动卸载外部 WARP 透明代理组件
+# （warp-google-unlock / 官方 warp-svc / redsocks）
+# 避免其 iptables 劫持破坏内置 WARP 的回落机制
 ############################################
-echo "==== 清理外部旧 WARP & redsocks 组件 ===="
-systemctl stop warp-svc redsocks 2>/dev/null || true
-systemctl disable warp-svc redsocks 2>/dev/null || true
-pkill -9 warp-svc redsocks 2>/dev/null || true
-# 清理旧的 iptables 劫持链
-for chain in WARP_GOOGLE WARP_CHATGPT WARP_NETFLIX; do
-  iptables -t nat -D OUTPUT -j "$chain" 2>/dev/null || true
-  iptables -t nat -F "$chain" 2>/dev/null || true
-  iptables -t nat -X "$chain" 2>/dev/null || true
-done
+cleanup_external_warp() {
+    local found=false
+
+    if [[ -f /usr/local/bin/warp-google ]] \
+       || systemctl list-unit-files 2>/dev/null | grep -q "warp-google" \
+       || systemctl is-active --quiet warp-svc 2>/dev/null \
+       || pgrep -x warp-svc >/dev/null 2>&1 \
+       || pgrep -x redsocks >/dev/null 2>&1; then
+        found=true
+    fi
+    if command -v iptables >/dev/null 2>&1; then
+        if iptables -t nat -L WARP_GOOGLE >/dev/null 2>&1 \
+           || iptables -t nat -L WARP_CHATGPT >/dev/null 2>&1 \
+           || iptables -t nat -L WARP_NETFLIX >/dev/null 2>&1; then
+            found=true
+        fi
+    fi
+
+    if [[ "$found" != "true" ]]; then
+        echo "未检测到外部 WARP 组件，跳过清理"
+        return 0
+    fi
+
+    echo "检测到外部 WARP / redsocks 组件，开始自动卸载..."
+    systemctl disable --now warp-google-update.timer 2>/dev/null || true
+    systemctl stop warp-google-update.service 2>/dev/null || true
+    systemctl disable warp-google-update.service 2>/dev/null || true
+    systemctl stop warp-google.service 2>/dev/null || true
+    systemctl disable warp-google.service 2>/dev/null || true
+    rm -f /etc/systemd/system/warp-google.service \
+          /etc/systemd/system/warp-google-update.service \
+          /etc/systemd/system/warp-google-update.timer
+
+    systemctl disable --now warp-svc 2>/dev/null || true
+    systemctl disable redsocks 2>/dev/null || true
+    pkill -9 warp-svc redsocks 2>/dev/null || true
+
+    if command -v iptables >/dev/null 2>&1; then
+        for chain in WARP_GOOGLE WARP_CHATGPT WARP_NETFLIX; do
+            iptables -t nat -D OUTPUT -j "$chain" 2>/dev/null || true
+            iptables -t nat -F "$chain" 2>/dev/null || true
+            iptables -t nat -X "$chain" 2>/dev/null || true
+        done
+    fi
+
+    if command -v apt &>/dev/null; then
+        DEBIAN_FRONTEND=noninteractive apt-get remove -y cloudflare-warp >/dev/null 2>&1 || true
+    elif command -v dnf &>/dev/null; then
+        dnf remove -y cloudflare-warp >/dev/null 2>&1 || true
+    elif command -v yum &>/dev/null; then
+        yum remove -y cloudflare-warp >/dev/null 2>&1 || true
+    fi
+    rm -f /usr/local/bin/warp-google
+
+    systemctl daemon-reload
+    echo "✓ 外部 WARP 组件卸载完成（将使用内置原生 WireGuard WARP）"
+}
+
+cleanup_external_warp
 
 ############################################
 # 自动生成/注册 Cloudflare WARP WireGuard 凭证
