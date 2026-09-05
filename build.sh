@@ -2,11 +2,13 @@
 
 set -e
 
-# 版本号：可通过第一个参数指定，如 ./build.sh v1.0.8；默认用 git tag 或 dev
+# 版本号：可通过第一个参数指定，如 ./build.sh v1.0.9；默认用 git tag 或 dev
 VERSION="${1:-$(git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
-echo "开始构建 V2bX ${VERSION}..."
+echo "开始构建 V2bX ${VERSION}（AnyTLS-only 精简版，sing-box 内核）..."
 
 LDFLAGS="-s -w -X 'github.com/InazumaV/V2bX/cmd.version=${VERSION}'"
+# sing-only：不含 xray/hysteria2/gvisor/quic/dhcp/clash-api；保留 wireguard（WARP 出站）
+TAGS="sing,with_wireguard"
 
 # 清理旧文件
 rm -rf build
@@ -14,11 +16,11 @@ mkdir -p build
 
 # 编译 amd64 版本
 echo "编译 Linux amd64 版本..."
-GOOS=linux GOARCH=amd64 go build -tags "sing,xray,hysteria2,with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api" -o build/V2bX-amd64 -ldflags="${LDFLAGS}" main.go
+GOOS=linux GOARCH=amd64 go build -tags "${TAGS}" -o build/V2bX-amd64 -ldflags="${LDFLAGS}" main.go
 
 # 编译 arm64 版本
 echo "编译 Linux arm64 版本..."
-GOOS=linux GOARCH=arm64 go build -tags "sing,xray,hysteria2,with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api" -o build/V2bX-arm64 -ldflags="${LDFLAGS}" main.go
+GOOS=linux GOARCH=arm64 go build -tags "${TAGS}" -o build/V2bX-arm64 -ldflags="${LDFLAGS}" main.go
 
 # 下载 geoip 和 geosite 数据文件（如果不存在）
 if [ ! -f "geoip.dat" ]; then

@@ -22,3 +22,6 @@ V2bX-linux-*
 *.dat
 *.db
 .ace-tool/
+node/1.key
+node/1.pem
+node/cert/
