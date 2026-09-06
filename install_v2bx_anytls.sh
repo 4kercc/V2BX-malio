@@ -9,6 +9,13 @@ API_HOST="${1:-}"
 API_KEY="${2:-}"
 NODE_ID="${3:-}"
 DOMAIN="${4:-}"
+# 第5个参数：是否启用内置 WARP 分流（on/off，默认 on）
+WARP_MODE="${5:-on}"
+
+WARP_ENABLED=true
+case "$WARP_MODE" in
+  off|OFF|false|False|0|no|NO) WARP_ENABLED=false ;;
+esac
 
 USE_SELF_SIGNED=false
 # 如果处于命令行非交互模式（前3个参数齐全），但第4个参数未传或为 null/NULL，则默认使用自签证书
@@ -49,6 +56,12 @@ else
 
   read -p "ACME Email (默认 v2bx@github.com): " ACME_EMAIL
   ACME_EMAIL=${ACME_EMAIL:-v2bx@github.com}
+
+  read -p "是否启用内置 WARP 分流解锁 (on/off, 默认 on): " warp_in
+  case "${warp_in:-on}" in
+    off|OFF|false|False|0|no|NO) WARP_ENABLED=false ;;
+    *) WARP_ENABLED=true ;;
+  esac
 
   ############################################
   # 自动读取本机公网IP（IPv4 + IPv6）
@@ -129,6 +142,7 @@ fi
 echo ""
 echo "==== 配置确认 ===="
 echo "API_HOST : $API_HOST"
+echo "WARP分流 : $WARP_ENABLED"
 echo "节点数   : $NODE_COUNT"
 for ((i=0; i<NODE_COUNT; i++)); do
   echo "  节点$((i+1)): NodeID=${NODE_IDS[$i]}  域名=${DOMAINS[$i]}  ListenIP=${LISTEN_IPS[$i]}  SendIP=${SEND_IPS[$i]}"
@@ -219,12 +233,15 @@ cleanup_external_warp
 
 ############################################
 # 自动生成/注册 Cloudflare WARP WireGuard 凭证
+# （WARP_ENABLED=false 时跳过注册，使用兜底凭证保证模板合法）
 ############################################
 WARP_CONF_FILE="/etc/V2bX/warp_account.json"
-WARP_PRIVATE_KEY=""
-WARP_IPV4=""
-WARP_IPV6=""
+# 兜底凭证：注册失败或 WARP 关闭时保证 warp 模板合法（可用 v2bx warp 切换）
+WARP_PRIVATE_KEY="aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
+WARP_IPV4="172.16.0.2/32"
+WARP_IPV6="2606:4700:110:8a9a:b0d:20e:a5b4:6b9d/128"
 
+if [[ "$WARP_ENABLED" == "true" ]]; then
 if [[ -f "$WARP_CONF_FILE" ]]; then
   WARP_PRIVATE_KEY=$(jq -r '.private_key // empty' "$WARP_CONF_FILE" 2>/dev/null || true)
   WARP_IPV4=$(jq -r '.v4 // empty' "$WARP_CONF_FILE" 2>/dev/null || true)
@@ -252,7 +269,7 @@ if [[ -z "$WARP_PRIVATE_KEY" || -z "$WARP_IPV4" ]]; then
 
     WARP_IPV4=$(echo "$WARP_REG_RES" | jq -r '.result.config.interface.addresses.v4 // empty' 2>/dev/null || true)
     WARP_IPV6=$(echo "$WARP_REG_RES" | jq -r '.result.config.interface.addresses.v6 // empty' 2>/dev/null || true)
-    
+
     if [[ -n "$WARP_IPV4" ]]; then
       WARP_PRIVATE_KEY="$RAW_PRIV"
       cat > "$WARP_CONF_FILE" <<EOF
@@ -267,12 +284,12 @@ EOF
   fi
 fi
 
-# 如果注册未成功，使用兼容的预置凭证模板以确保服务能正常启动
+# 如果注册未成功，沿用兜底凭证
 if [[ -z "$WARP_PRIVATE_KEY" || -z "$WARP_IPV4" ]]; then
-  WARP_PRIVATE_KEY="aAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
-  WARP_IPV4="172.16.0.2/32"
-  WARP_IPV6="2606:4700:110:8a9a:b0d:20e:a5b4:6b9d/128"
-  echo "⚠️ WARP 自动注册受限，使用预设模板。"
+  echo "⚠️ WARP 自动注册受限，使用兜底凭证。"
+fi
+else
+  echo "WARP 分流已关闭 (第5参数 off)，跳过 WARP 账号注册。"
 fi
 
 ############################################
@@ -368,11 +385,11 @@ $(gen_nodes)
 EOF
 
 ############################################
-# sing_origin.json
+# sing_origin.json（双模板：warp / direct，可随时用 v2bx warp 切换）
 ############################################
 dnsstrategy="prefer_ipv4"
 
-cat <<EOF > /etc/V2bX/sing_origin.json
+cat <<EOF > ${CONFIG_DIR}/sing_origin_warp.json
 {
   "dns": {
     "servers": [
@@ -497,6 +514,20 @@ cat <<EOF > /etc/V2bX/sing_origin.json
   }
 }
 EOF
+
+# 派生无 WARP 的直连模板（移除 warp 出站与分流规则），供 v2bx warp on/off 随时切换
+jq 'del(.outbounds[]? | select(.tag == "warp-out" or .tag == "warp-auto"))
+    | .route.rules |= map(select((.outbound // "") != "warp-auto"))' \
+    ${CONFIG_DIR}/sing_origin_warp.json > ${CONFIG_DIR}/sing_origin_direct.json
+
+if [[ "$WARP_ENABLED" == "true" ]]; then
+  cp -f ${CONFIG_DIR}/sing_origin_warp.json ${CONFIG_DIR}/sing_origin.json
+  echo "on" > ${CONFIG_DIR}/warp_mode
+else
+  cp -f ${CONFIG_DIR}/sing_origin_direct.json ${CONFIG_DIR}/sing_origin.json
+  echo "off" > ${CONFIG_DIR}/warp_mode
+fi
+echo "WARP 分流模式: $(cat ${CONFIG_DIR}/warp_mode)（可用 v2bx warp on/off/status 随时切换）"
 
 ############################################
 # ACME for all domains

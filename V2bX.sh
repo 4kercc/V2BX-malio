@@ -275,6 +275,63 @@ set_config_param() {
     restart 0
 }
 
+# WARP 分流开关：切换 sing_origin.json 模板并重启
+warp_config() {
+    local action="${1:-status}"
+    local conf_dir="/etc/V2bX"
+    local live="${conf_dir}/sing_origin.json"
+    local warp_tpl="${conf_dir}/sing_origin_warp.json"
+    local direct_tpl="${conf_dir}/sing_origin_direct.json"
+
+    if [[ ! -f "$live" ]]; then
+        echo -e "${red}错误：未找到 $live，请先安装 V2bX${plain}"
+        exit 1
+    fi
+
+    # 兼容旧安装：现场派生缺失的模板
+    if [[ ! -f "$warp_tpl" ]] && grep -q '"warp-auto"' "$live" && command -v jq >/dev/null 2>&1; then
+        cp -f "$live" "$warp_tpl"
+        jq 'del(.outbounds[]? | select(.tag == "warp-out" or .tag == "warp-auto"))
+            | .route.rules |= map(select((.outbound // "") != "warp-auto"))' "$live" > "$direct_tpl"
+    fi
+
+    case "$action" in
+        "on")
+            if [[ ! -f "$warp_tpl" ]]; then
+                echo -e "${red}错误：未找到 WARP 模板 ($warp_tpl)，无法启用。${plain}"
+                exit 1
+            fi
+            cp -f "$warp_tpl" "$live"
+            echo -e "${green}✓ WARP 分流已启用（Google/ChatGPT 等域名走 WARP，故障自动回落原生 IP）${plain}"
+            restart 0
+            ;;
+        "off")
+            if [[ ! -f "$direct_tpl" ]]; then
+                if command -v jq >/dev/null 2>&1; then
+                    jq 'del(.outbounds[]? | select(.tag == "warp-out" or .tag == "warp-auto"))
+                        | .route.rules |= map(select((.outbound // "") != "warp-auto"))' "$live" > "$direct_tpl"
+                else
+                    echo -e "${red}错误：未找到直连模板且系统缺少 jq，无法切换。${plain}"
+                    exit 1
+                fi
+            fi
+            cp -f "$direct_tpl" "$live"
+            echo -e "${green}✓ WARP 分流已禁用（全部流量走服务器原生 IP，WARP 进程不再加载）${plain}"
+            restart 0
+            ;;
+        "status"|"")
+            if grep -q '"warp-auto"' "$live"; then
+                echo -e "WARP 分流: ${green}已启用${plain}（v2bx warp off 可禁用）"
+            else
+                echo -e "WARP 分流: ${yellow}已禁用${plain}（v2bx warp on 可启用）"
+            fi
+            ;;
+        *)
+            echo -e "用法: v2bx warp on|off|status"
+            ;;
+    esac
+}
+
 uninstall() {
     confirm "确定要卸载 V2bX 吗?" "n"
     if [[ $? != 0 ]]; then
@@ -1094,6 +1151,7 @@ show_usage() {
     echo "V2bX set key <key>       - 快捷设置 ApiKey"
     echo "V2bX set id <node_id>    - 快捷设置 NodeID"
     echo "V2bX set domain <domain> - 快捷设置 CertDomain"
+    echo "V2bX warp on|off|status  - WARP 分流开关与状态"
     echo "------------------------------------------"
 }
 
@@ -1164,6 +1222,7 @@ if [[ $# > 0 ]]; then
         "update") check_install 0 && update 0 $2 ;;
         "config") config $* ;;
         "set") check_install 0 && set_config_param "$2" "$3" ;;
+        "warp") warp_config "$2" ;;
         "generate") generate_config_file ;;
         "install") check_uninstall 0 && install 0 ;;
         "uninstall") check_install 0 && uninstall 0 ;;
