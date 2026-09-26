@@ -90,9 +90,11 @@ async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',heade
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
 function fmtAct(a){if(!a)return '-';
  const t=fmtTime(a.queuedAt);
- if(a.status==='queued')return '<span class="q">⏳ 排队中</span><br><span class="small">'+a.type+' · '+t+'</span>';
+ if(a.status==='queued')return '<span class="q">⏳ 排队中</span>'+(a.queuedOffline?'<br><span class="small" style="color:#f87171">节点离线，上线后执行</span>':'<br><span class="small">'+a.type+' · '+t+'</span>');
+ if(a.status==='stuck-offline')return '<span style="color:#f87171">⚠️ 节点离线</span><br><span class="small">'+a.type+' 已下发未确认 · '+t+'</span>';
+ if(a.status==='unconfirmed')return '<span style="color:#f87171">⚠️ 未确认</span><br><span class="small">'+a.type+' 心跳异常 · '+t+'</span>';
+ if(a.status==='done')return '<span class="done">✅ 已完成</span>'+(a.inferred?'<span class="small">(推断)</span>':'')+'<br><span class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</span>';
  if(a.status==='delivered')return '<span class="d">🔄 已下发</span><br><span class="small">等节点心跳执行 · '+t+'</span>';
- if(a.status==='done')return '<span class="done">✅ 已完成</span><br><span class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</span>';
  return '-';}
 function render(){const tb=document.getElementById('tb');document.getElementById('cnt').textContent='('+NODES.filter(n=>n.online).length+'/'+NODES.length+' 在线)';
  tb.innerHTML=NODES.map(n=>'<tr>'+
@@ -245,6 +247,7 @@ const handler = async (req, res) => {
     const name = String(body.name || 'unknown').slice(0, 64);
     const key = name + '|' + ip;
     const rec = data.nodes[key] || { created: Date.now(), desired: null, pendingAction: null };
+    const prevSeen = rec.lastSeen || 0; // 真正的上一次心跳时间（必须在更新 lastSeen 之前捕获）
     rec.name = name;
     rec.ip = ip;
     rec.lastSeen = Date.now();
@@ -262,13 +265,29 @@ const handler = async (req, res) => {
       if (rec.action && rec.action.status === 'queued') {
         rec.action.status = 'delivered';
         rec.action.deliveredAt = Date.now();
+        rec.action.deliveredLastSeen = prevSeen; // 推断基准：交付时节点的心跳时间
       }
     }
-    // 节点上报的动作执行确认（agent 执行完写 ack，下一次心跳带回）
+    // 节点上报的动作执行确认（新 agent 执行完写 ack，下一次心跳带回）
     if (body.ack && rec.action && rec.action.status === 'delivered'
         && String(body.ack).startsWith(rec.action.type)) {
       rec.action.status = 'done';
       rec.action.completedAt = Date.now();
+    }
+    // 老版本 agent 无 ack 机制：交付基准点之后的心跳即视为执行完成，避免动作永远卡在"已下发"
+    // restart: 交付后的下一轮心跳推断完成；update: 版本与锁定一致，或两轮心跳后推断完成
+    const inferBase = rec.action && (rec.action.deliveredLastSeen || rec.action.deliveredAt) || 0;
+    if (rec.action && rec.action.status === 'delivered'
+        && prevSeen > inferBase && !body.ack) {
+      let infer = false;
+      if (rec.action.type === 'restart') infer = true;
+      else if (rec.action.version && body.version === rec.action.version) infer = true;
+      else if (prevSeen > inferBase + 150000) infer = true;
+      if (infer) {
+        rec.action.status = 'done';
+        rec.action.inferred = true; // 无 ack，由服务端推断
+        rec.action.completedAt = Date.now();
+      }
     }
     data.nodes[key] = rec;
     saveData(data);
@@ -288,10 +307,28 @@ const handler = async (req, res) => {
 
   if (url === '/api/nodes' && req.method === 'GET') {
     const now = Date.now();
+    // 计算动作的有效展示状态（覆盖离线/超时等真实场景）
+    const effAction = (n) => {
+      const a = n.action;
+      if (!a) return null;
+      const online = now - n.lastSeen < 5 * 60 * 1000;
+      const out = Object.assign({}, a);
+      if (a.status === 'delivered') {
+        if (n.lastSeen > a.deliveredAt + 60000) {
+          out.status = 'done'; // 交付后节点又心跳过一次：老 agent 由推断逻辑落库，这里兜底展示
+        } else if (!online && now - a.deliveredAt > 5 * 60 * 1000) {
+          out.status = 'stuck-offline'; // 节点掉线，动作未确认
+        } else if (now - a.deliveredAt > 30 * 60 * 1000) {
+          out.status = 'unconfirmed'; // 长时间无后续心跳，无法确认
+        }
+      }
+      if (a.status === 'queued' && !online) out.queuedOffline = true;
+      return out;
+    };
     const list = Object.entries(data.nodes).map(([key, n]) => ({
       key, name: n.name, ip: n.ip, lastSeen: n.lastSeen,
       online: now - n.lastSeen < 5 * 60 * 1000, info: n.info,
-      desired: n.desired || null, action: n.action || null
+      desired: n.desired || null, action: effAction(n)
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, { token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion, nodes: list });
   }
