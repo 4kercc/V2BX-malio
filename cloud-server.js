@@ -116,6 +116,8 @@ function pickCfg(cfg) {
   }
   return out;
 }
+// 差异化字段：每台节点各不相同，禁止多目标/全部批量下发，只能单台设置
+const PER_NODE_FIELDS = ['NodeID'];
 
 // ---------- API ----------
 const server = http.createServer(async (req, res) => {
@@ -165,6 +167,14 @@ const server = http.createServer(async (req, res) => {
     const body = await readBody(req);
     const fields = pickCfg(body.fields);
     if (!Object.keys(fields).length) return json(res, 400, { error: 'no fields' });
+    // 差异化字段保护：NodeID 每台节点不同，禁止批量覆盖
+    const isBatch = body.targets === 'all' || (Array.isArray(body.targets) && body.targets.length > 1);
+    if (isBatch) {
+      const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k));
+      if (bad.length) {
+        return json(res, 400, { error: `字段 ${bad.join(',')} 是每台节点不同的差异化配置，禁止批量下发，请单独勾选节点逐台设置` });
+      }
+    }
     let count = 0;
     for (const [key, n] of Object.entries(data.nodes)) {
       if (body.targets === 'all' || (body.targets || []).includes(key)) {

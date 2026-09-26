@@ -62,6 +62,9 @@ chmod +x /usr/local/V2bX/cloud-agent.sh
 
 ## 四、工作细节
 
+- **批量下发保护**：NodeID 是每台节点不同的差异化字段，**服务端直接禁止**批量/全部下发（只能单台设置），防止把 20 台全改成同一个节点；ApiHost/ApiKey/CertDomain/Warp 可安全批量；
+- **配置修改不破坏其他内容**：agent 用字段级 sed 只改目标字段，config.json 里的监听 IP、证书路径、内核配置等一概不动；
+- **三重防呆**：修改前自动备份（`config.json.bak.cloud`）→ 修改后 `jq` 校验 JSON，失败自动回滚备份，**绝不带病重启** → 改 CertDomain 时若新域名无证书，自动生成 10 年自签兜底，节点不会重启即挂；
 - 节点身份 = `NODE_NAME + 出口IP`，控制中心自动登记新节点；
 - 心跳失败自动跳过本轮，不影响 V2bX 运行；agent 全程 `flock` 防并发；
 - agent 日志进 journald：`journalctl -t v2bx-cloud`；升级日志：`/var/log/v2bx-cloud-update.log`；

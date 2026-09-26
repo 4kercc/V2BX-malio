@@ -95,11 +95,29 @@ apply_int() {
   CHANGED=1
 }
 
+# 修改前备份当前配置（用于校验失败回滚，保证"不影响现有配置"）
+cp -f "$CONFIG_JSON" "$CONFIG_JSON.bak.cloud" 2>/dev/null || true
+
 CHANGED=0
 apply_str "ApiHost" "ApiHost" "$CUR_HOST"
 apply_str "ApiKey" "ApiKey" "$CUR_KEY"
 apply_int "NodeID" "NodeID" "$CUR_ID"
-apply_str "CertDomain" "CertDomain" "$CUR_DOMAIN"
+
+# CertDomain 特殊处理：新证书不存在时先生成自签兜底，避免改完域名重启即挂
+WANT_DOMAIN=$(echo "$RESP" | jq -r ".desired.CertDomain // empty" 2>/dev/null)
+if [[ -n "$WANT_DOMAIN" && "$WANT_DOMAIN" != "null" && "$WANT_DOMAIN" != "$CUR_DOMAIN" ]]; then
+  if [[ ! -f "/etc/ssl/${WANT_DOMAIN}.crt" || ! -f "/etc/ssl/${WANT_DOMAIN}.key" ]]; then
+    mkdir -p /etc/ssl
+    openssl req -x509 -nodes -newkey rsa:2048 \
+      -keyout "/etc/ssl/${WANT_DOMAIN}.key" \
+      -out "/etc/ssl/${WANT_DOMAIN}.crt" \
+      -subj "/CN=${WANT_DOMAIN}" -days 3650 2>/dev/null \
+      && log "CertDomain=${WANT_DOMAIN} 无证书，已自动生成自签兜底"
+  fi
+  sed -i -E "s/(\"CertDomain\"\s*:\s*\")[^\"]+(\")/\1${WANT_DOMAIN}\2/g" "$CONFIG_JSON"
+  log "applied CertDomain -> $WANT_DOMAIN"
+  CHANGED=1
+fi
 
 # WARP 开关
 WANT_WARP=$(echo "$RESP" | jq -r ".desired.Warp // empty" 2>/dev/null)
@@ -117,6 +135,17 @@ if [[ -n "$WANT_WARP" && "$WANT_WARP" != "$WARP" && "$WANT_WARP" != "null" ]]; t
           /etc/V2bX/sing_origin.json > /etc/V2bX/sing_origin.json.tmp && \
           mv /etc/V2bX/sing_origin.json.tmp /etc/V2bX/sing_origin.json && CHANGED=1 && log "applied Warp -> off(jq)"
     fi
+  fi
+fi
+
+############################################
+# JSON 校验：任何修改导致配置损坏时自动回滚，绝不带病重启
+############################################
+if [[ "$CHANGED" == "1" ]]; then
+  if ! jq empty "$CONFIG_JSON" 2>/dev/null; then
+    cp -f "$CONFIG_JSON.bak.cloud" "$CONFIG_JSON"
+    CHANGED=0
+    log "config.json 校验失败，已回滚到修改前备份"
   fi
 fi
 
