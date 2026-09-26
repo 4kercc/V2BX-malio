@@ -41,6 +41,13 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
 #msg{margin:8px 0;color:#fbbf24;min-height:18px;font-size:13px}
 .small{font-size:11px;color:#94a3b8}
 #nodeToken{width:280px}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99;align-items:center;justify-content:center}
+.modal.show{display:flex}
+.modal-box{background:#111827;border:1px solid #334155;border-radius:12px;padding:24px 28px;max-width:520px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.5)}
+.modal-box h3{margin:0 0 12px;font-size:16px;color:#93c5fd}
+.modal-box ul{margin:8px 0 16px;padding-left:18px;font-size:13px;line-height:1.9;color:#cbd5e1}
+.modal-box .foot{font-size:11px;color:#94a3b8}
+.q{color:#fbbf24}.d{color:#60a5fa}.done{color:#34d399}
 </style></head><body>
 <h1>V2bX 云控中心 <span class="muted" id="cnt"></span></h1>
 <div class="bar">
@@ -65,8 +72,11 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
   <button class="gray" onclick="saveSettings()">保存设置</button>
 </div>
 <div id="msg"></div>
+<div class="modal" id="modal" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="modal-box" id="modalBox"></div>
+</div>
 <table><thead><tr>
-<th></th><th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板/节点ID</th><th>最后心跳</th><th>待下发</th>
+<th></th><th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板/节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
 </tr></thead><tbody id="tb"></tbody></table>
 <script>
 const T=localStorage.getItem('cloudToken')||prompt('请输入管理 Token（服务端 cloud-data.json 里的 token 字段）');
@@ -78,6 +88,12 @@ async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',heade
  if(r.status===403){document.getElementById('msg').textContent=j.error||'被拒绝';}
  return j;}
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
+function fmtAct(a){if(!a)return '-';
+ const t=fmtTime(a.queuedAt);
+ if(a.status==='queued')return '<span class="q">⏳ 排队中</span><br><span class="small">'+a.type+' · '+t+'</span>';
+ if(a.status==='delivered')return '<span class="d">🔄 已下发</span><br><span class="small">等节点心跳执行 · '+t+'</span>';
+ if(a.status==='done')return '<span class="done">✅ 已完成</span><br><span class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</span>';
+ return '-';}
 function render(){const tb=document.getElementById('tb');document.getElementById('cnt').textContent='('+NODES.filter(n=>n.online).length+'/'+NODES.length+' 在线)';
  tb.innerHTML=NODES.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'"></td>'+
@@ -87,7 +103,8 @@ function render(){const tb=document.getElementById('tb');document.getElementById
  '<td>'+(n.info.warp||'-')+'</td>'+
  '<td class="small">'+((n.info.cfg&&n.info.cfg.ApiHost)||'')+'<br>NodeID '+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</td>'+
  '<td class="small">'+fmtTime(n.lastSeen)+'</td>'+
- '<td class="small">'+(n.desired?JSON.stringify(n.desired):'-')+'</td></tr>').join('');}
+ '<td class="small">'+(n.desired?JSON.stringify(n.desired):'-')+'</td>'+
+ '<td class="small">'+fmtAct(n.action)+'</td></tr>').join('');}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
  document.getElementById('sNodeToken').value=d.nodeToken||'';
  if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
@@ -96,14 +113,43 @@ function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){alert('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
- const d=await api('/api/desired',{targets:t,fields:f});show(d.error?('被拒绝: '+d.error):('已下发到 '+d.applied+' 个节点: '+JSON.stringify(d.fields)));}
+ const d=await api('/api/desired',{targets:t,fields:f});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ showModal('已写入期望配置到 '+d.applied+' 台节点', [
+   '下发内容: '+JSON.stringify(d.fields),
+   '执行时机: 每台节点下一次心跳（≤2 分钟）',
+   '执行规则: 与节点当前配置一致则跳过；有差异才修改并自动重启'
+ ], '完成后「待下发」列清空即代表已应用；列表每 5 秒自动刷新');}
 async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
- const d=await api('/api/desired',{targets:'all',fields:f});show(d.error?('被拒绝: '+d.error):('已下发到全部 '+d.applied+' 个节点'));}
-async function doAction(a){const t=targets();if(!t)return;if(!confirm(a==='update'?'确认升级选中节点？':'确认重启选中节点？'))return;
- const d=await api('/api/action',{targets:t,action:a});show(d.error?('被拒绝: '+d.error):('动作已排队: '+d.action+(d.version?' (锁定版本 '+d.version+')':' (最新版)')));}
+ const d=await api('/api/desired',{targets:'all',fields:f});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ showModal('已写入期望配置到全部 '+d.applied+' 台节点', [
+   '下发内容: '+JSON.stringify(d.fields),
+   '执行时机: 每台节点下一次心跳（≤2 分钟）',
+   '执行规则: 与节点当前配置一致则跳过；有差异才修改并自动重启'
+ ], '完成后「待下发」列清空即代表已应用；列表每 5 秒自动刷新');}
+async function doAction(a){const t=targets();if(!t)return;
+ const ver=document.getElementById('sUpdateVer').value.trim();
+ if(!confirm(a==='update'?('确认升级选中节点？'+(ver?('（锁定版本 '+ver+'）'):'（最新版）')):'确认重启选中节点？'))return;
+ const d=await api('/api/action',{targets:t,action:a});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ const lines=a==='update'?[
+   '锁定版本: '+(d.version||'最新 Release'),
+   '执行时机: 每台节点下一次心跳（≤2 分钟）',
+   '执行方式: 自动运行升级脚本并重启服务（约 1~2 分钟）'
+ ]:[
+   '执行时机: 每台节点下一次心跳（≤2 分钟）',
+   '执行方式: systemd 重启 V2bX 服务（约 10 秒完成）'
+ ];
+ showModal('已为 '+d.queued+' 台节点排队: '+(a==='update'?'升级':'重启'), lines,
+   '状态流转: ⏳ 排队中 → 🔄 已下发(等心跳) → ✅ 已完成<br>列表每 5 秒自动刷新，可关闭本窗口');}
 async function clearDesired(){const t=targets();if(!t)return;await api('/api/desired/clear',{targets:t});show('已清除期望配置');}
 async function saveSettings(){const v=document.getElementById('sUpdateVer').value.trim();
  const d=await api('/api/settings',{updateVersion:v});show(d.error?('被拒绝: '+d.error):('设置已保存: 升级版本锁定 = '+(v||'最新版')));}
+function showModal(title,lines,foot){
+ document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3><ul>'+lines.map(l=>'<li>'+l+'</li>').join('')+'</ul><div class="foot">'+foot+'</div><button class="ok" id="modalOk" style="margin-top:12px">知道了</button>';
+ document.getElementById('modalOk').onclick=function(){document.getElementById('modal').classList.remove('show');};
+ document.getElementById('modal').classList.add('show');}
 function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
 refresh();setInterval(refresh,5000);
 </script></body></html>`;
@@ -211,7 +257,19 @@ const handler = async (req, res) => {
     const pending = rec.pendingAction;
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     if (pending === 'update') reply.version = data.updateVersion || '';
-    if (pending) rec.pendingAction = null; // 动作一次性下发
+    if (pending) {
+      rec.pendingAction = null; // 动作一次性下发
+      if (rec.action && rec.action.status === 'queued') {
+        rec.action.status = 'delivered';
+        rec.action.deliveredAt = Date.now();
+      }
+    }
+    // 节点上报的动作执行确认（agent 执行完写 ack，下一次心跳带回）
+    if (body.ack && rec.action && rec.action.status === 'delivered'
+        && String(body.ack).startsWith(rec.action.type)) {
+      rec.action.status = 'done';
+      rec.action.completedAt = Date.now();
+    }
     data.nodes[key] = rec;
     saveData(data);
     return json(res, 200, reply);
@@ -233,7 +291,7 @@ const handler = async (req, res) => {
     const list = Object.entries(data.nodes).map(([key, n]) => ({
       key, name: n.name, ip: n.ip, lastSeen: n.lastSeen,
       online: now - n.lastSeen < 5 * 60 * 1000, info: n.info,
-      desired: n.desired || null
+      desired: n.desired || null, action: n.action || null
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, { token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion, nodes: list });
   }
@@ -275,7 +333,16 @@ const handler = async (req, res) => {
     const act = body.action === 'update' ? 'update' : 'restart';
     let count = 0;
     for (const [key, n] of Object.entries(data.nodes)) {
-      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.pendingAction = act; count++; }
+      if (body.targets === 'all' || (body.targets || []).includes(key)) {
+        n.pendingAction = act;
+        n.action = {
+          type: act,
+          version: act === 'update' ? (data.updateVersion || '') : '',
+          queuedAt: Date.now(),
+          status: 'queued'
+        };
+        count++;
+      }
     }
     saveData(data);
     return json(res, 200, { ok: true, queued: count, action: act, version: act === 'update' ? (data.updateVersion || '') : undefined });

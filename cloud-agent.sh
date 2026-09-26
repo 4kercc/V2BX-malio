@@ -57,6 +57,13 @@ CUR_DOMAIN=$(get_str CertDomain)
 ############################################
 # 上报心跳并拉取期望配置
 ############################################
+# 上一次动作的执行确认（一次性上报给云端，用于后台显示"已完成"）
+ACK=""
+if [[ -f /tmp/.v2bx-cloud-ack ]]; then
+  ACK=$(head -1 /tmp/.v2bx-cloud-ack 2>/dev/null)
+  rm -f /tmp/.v2bx-cloud-ack
+fi
+
 PAYLOAD=$(cat <<EOF
 {
   "name": "${NAME}",
@@ -67,6 +74,7 @@ PAYLOAD=$(cat <<EOF
   "uptime_sec": ${SERVICE_UPTIME:-0},
   "warp": "${WARP}",
   "load": "${LOAD}",
+  "ack": "${ACK}",
   "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}"}
 }
 EOF
@@ -158,7 +166,7 @@ fi
 ############################################
 ACTION=$(echo "$RESP" | jq -r ".action // \"none\"" 2>/dev/null)
 if [[ "$ACTION" == "restart" ]]; then
-  systemctl restart V2bX && log "action: restarted"
+  systemctl restart V2bX && { log "action: restarted"; echo "restart $(date +%s)" > /tmp/.v2bx-cloud-ack; }
   exit 0
 fi
 if [[ "$ACTION" == "update" ]]; then
@@ -171,6 +179,7 @@ if [[ "$ACTION" == "update" ]]; then
     log "action: self-update (latest)"
     nohup bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/update-v2bx.sh) >> /var/log/v2bx-cloud-update.log 2>&1 &
   fi
+  echo "update $(date +%s)" > /tmp/.v2bx-cloud-ack
   exit 0
 fi
 
