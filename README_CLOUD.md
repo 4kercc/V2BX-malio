@@ -14,7 +14,15 @@
 - **拉取式**：节点主动出站访问控制中心，节点侧无需开放任何端口，NAT/防火墙友好
 - **幂等**：期望配置与本地一致则什么都不做；有差异才修改 + 重启（≤2 分钟收敛）
 
-## 一、部署控制中心（任一台你现有的服务器）
+## 一、部署控制中心（一键脚本，任一台你现有的服务器）
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-install.sh) [端口，默认8765]
+```
+
+脚本自动完成：安装 Node.js → 下载控制中心 → **生成双随机 Token** → 注册 systemd 常驻（`v2bx-cloud`，开机自启+崩溃自动拉起）→ 打印后台地址/两把 Token/**可直接复制的节点接入命令**。凭证同时落盘 `/opt/v2bx-cloud/credentials.txt`（600 权限）。幂等：重复执行只更新程序，Token 与节点数据保留。
+
+手动部署（等价方式）：
 
 ```bash
 mkdir -p /opt/v2bx-cloud && cd /opt/v2bx-cloud
@@ -22,10 +30,9 @@ curl -fsSL -o cloud-server.js https://raw.githubusercontent.com/4kercc/V2BX-mali
 node cloud-server.js          # 首次运行自动生成 cloud-data.json
 ```
 
-- 首次生成的 `cloud-data.json` 里有 `token` 字段（管理密钥），**务必改成自己的随机串**后重启进程；
-- 常驻运行：`pm2 start cloud-server.js --name v2bx-cloud` 或 systemd；
+- 常驻运行：推荐上面的 systemd 方式，或 `pm2 start cloud-server.js --name v2bx-cloud`；
 - **安全要求**：用 Nginx/Caddy 反代并启用 HTTPS 后再暴露公网（agent 与后台都走这个地址）；
-- 改端口：`PORT=9000 node cloud-server.js`。
+- 改端口：安装脚本传参，或 `PORT=9000 node cloud-server.js`。
 
 ## 二、节点接入（安装时传第 6/7 参数）
 
