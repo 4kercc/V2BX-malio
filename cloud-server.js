@@ -62,6 +62,9 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
   <button onclick="doAction('restart')">重启选中</button>
   <button onclick="doAction('update')">升级选中</button>
   <button class="gray" onclick="clearDesired()">清除选中节点的期望配置</button>
+  <button class="gray" onclick="refresh()">↻ 手动刷新</button>
+  <button class="gray" id="autoBtn" onclick="toggleAuto()">自动刷新: 开</button>
+  <span class="small" id="lastRefresh"></span>
   <span class="small">节点在下一个心跳周期(≤2分钟)内自动应用并重启</span>
 </div>
 <div class="bar">
@@ -76,7 +79,7 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
   <div class="modal-box" id="modalBox"></div>
 </div>
 <table><thead><tr>
-<th></th><th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板/节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
+<th><input type="checkbox" id="selAll" onchange="toggleAll(this)"></th><th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板/节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
 </tr></thead><tbody id="tb"></tbody></table>
 <script>
 const T=localStorage.getItem('cloudToken')||prompt('请输入管理 Token（服务端 cloud-data.json 里的 token 字段）');
@@ -96,7 +99,8 @@ function fmtAct(a){if(!a)return '-';
  if(a.status==='done')return '<span class="done">✅ 已完成</span>'+(a.inferred?'<span class="small">(推断)</span>':'')+'<br><span class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</span>';
  if(a.status==='delivered')return '<span class="d">🔄 已下发</span><br><span class="small">等节点心跳执行 · '+t+'</span>';
  return '-';}
-function render(){const tb=document.getElementById('tb');document.getElementById('cnt').textContent='('+NODES.filter(n=>n.online).length+'/'+NODES.length+' 在线)';
+function render(){const keepSel=new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)));
+ const tb=document.getElementById('tb');document.getElementById('cnt').textContent='('+NODES.filter(n=>n.online).length+'/'+NODES.length+' 在线)';
  tb.innerHTML=NODES.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'"></td>'+
  '<td class="'+(n.online?'on':'off')+'">'+(n.online?'在线':'离线')+'</td>'+
@@ -106,7 +110,10 @@ function render(){const tb=document.getElementById('tb');document.getElementById
  '<td class="small">'+((n.info.cfg&&n.info.cfg.ApiHost)||'')+'<br>NodeID '+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</td>'+
  '<td class="small">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?JSON.stringify(n.desired):'-')+'</td>'+
- '<td class="small">'+fmtAct(n.action)+'</td></tr>').join('');}
+ '<td class="small">'+fmtAct(n.action)+'</td></tr>').join('');
+ document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
+ const all=[...document.querySelectorAll('.sel')];
+ document.getElementById('selAll').checked=all.length>0&&all.every(x=>x.checked);}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
  document.getElementById('sNodeToken').value=d.nodeToken||'';
  if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
@@ -153,7 +160,15 @@ function showModal(title,lines,foot){
  document.getElementById('modalOk').onclick=function(){document.getElementById('modal').classList.remove('show');};
  document.getElementById('modal').classList.add('show');}
 function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
-refresh();setInterval(refresh,5000);
+function toggleAll(cb){document.querySelectorAll('.sel').forEach(x=>x.checked=cb.checked);}
+let AUTO=true;
+function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');b.style.background=AUTO?'#475569':'#dc2626';}
+async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
+ document.getElementById('sNodeToken').value=d.nodeToken||'';
+ if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
+ render();
+ document.getElementById('lastRefresh').textContent='上次刷新 '+new Date().toLocaleTimeString();}catch(e){}}
+refresh();setInterval(()=>{if(AUTO)refresh();},5000);
 </script></body></html>`;
 
 // ---------- 数据存储（含 v1 → v2 迁移） ----------
