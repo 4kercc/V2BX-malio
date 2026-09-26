@@ -71,6 +71,9 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
   <b>全局设置</b><br>
   节点接入 Token: <input id="sNodeToken" readonly>
   <span class="small">（cloud-join.sh / agent 心跳专用，与管理 Token 分离）</span><br>
+  一键对接脚本: <input id="joinCmd" readonly style="width:640px">
+  <button class="gray" onclick="copyJoin()">复制</button>
+  <span class="small">（粘贴到任意节点服务器以 root 执行即完成接入，自签证书自动识别）</span><br>
   升级版本锁定: <input id="sUpdateVer" placeholder="留空=最新 Release，如 v1.0.9" style="width:240px">
   <button class="gray" onclick="saveSettings()">保存设置</button>
 </div>
@@ -114,10 +117,6 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
  const all=[...document.querySelectorAll('.sel')];
  document.getElementById('selAll').checked=all.length>0&&all.every(x=>x.checked);}
-async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
- document.getElementById('sNodeToken').value=d.nodeToken||'';
- if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
- render();}catch(e){}}
 function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){alert('请先勾选节点');return null;}return s;}
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){alert('NodeID 必须为数字');return null;}return f;}
@@ -160,15 +159,24 @@ function showModal(title,lines,foot){
  document.getElementById('modalOk').onclick=function(){document.getElementById('modal').classList.remove('show');};
  document.getElementById('modal').classList.add('show');}
 function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
-function toggleAll(cb){document.querySelectorAll('.sel').forEach(x=>x.checked=cb.checked);}
-let AUTO=true;
-function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');b.style.background=AUTO?'#475569':'#dc2626';}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
  document.getElementById('sNodeToken').value=d.nodeToken||'';
+ document.getElementById('joinCmd').value='bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) "'+location.origin+'" "'+(d.nodeToken||'')+'"';
  if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
  render();
- document.getElementById('lastRefresh').textContent='上次刷新 '+new Date().toLocaleTimeString();}catch(e){}}
-refresh();setInterval(()=>{if(AUTO)refresh();},5000);
+ const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));
+ document.getElementById('lastRefresh').textContent='上次刷新 '+new Date().toLocaleTimeString()+(inflight&&AUTO?'（⚡ 有任务执行中，3秒快速轮询）':'');}catch(e){}}
+function copyJoin(){const v=document.getElementById('joinCmd').value;
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(()=>show('✓ 对接脚本已复制到剪贴板')).catch(()=>{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');});}
+ else{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');}}
+function fallbackCopy(v){const i=document.getElementById('joinCmd');i.focus();i.select();document.execCommand('copy');}
+function toggleAll(cb){document.querySelectorAll('.sel').forEach(x=>x.checked=cb.checked);}
+let AUTO=true;let pollTimer=null;
+function pollMs(){const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));return inflight?3000:5000;}
+function scheduleRefresh(){if(pollTimer)clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(AUTO)refresh();scheduleRefresh();},pollMs());}
+function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');b.style.background=AUTO?'#475569':'#dc2626';if(AUTO)refresh();}
+function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
+refresh();scheduleRefresh();
 </script></body></html>`;
 
 // ---------- 数据存储（含 v1 → v2 迁移） ----------
