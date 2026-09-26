@@ -16,6 +16,10 @@ source "$CONF"
 command -v curl >/dev/null || exit 0
 command -v jq >/dev/null || exit 0
 
+# 自签 HTTPS 场景: CLOUD_INSECURE=1 时跳过证书校验
+CURL_TLS=""
+[[ "$CLOUD_INSECURE" == "1" ]] && CURL_TLS="-k"
+
 log() { logger -t "$LOGTAG" "$1" 2>/dev/null || echo "$(date '+%F %T') $1" >> /var/log/v2bx-cloud.log; }
 
 # 防止上一轮尚未跑完（如正在执行 update）
@@ -68,7 +72,7 @@ PAYLOAD=$(cat <<EOF
 EOF
 )
 
-RESP=$(curl -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
+RESP=$(curl $CURL_TLS -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
   -H "X-Token: $CLOUD_TOKEN" -H "Content-Type: application/json" \
   -d "$PAYLOAD" 2>/dev/null)
 

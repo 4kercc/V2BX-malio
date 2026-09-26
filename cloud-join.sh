@@ -4,7 +4,8 @@
 # 只写 cloud.conf + agent + cron，绝不修改现有节点配置
 # 用法:
 #   bash cloud-join.sh "https://云控地址" "Token"              # 自动命名
-#   bash cloud-join.sh "https://云控地址" "Token" "hk-iepl-01"  # 指定名称
+#   bash cloud-join.sh "https://云控地址" "Token" "自定义名称"   # 指定名称
+#   bash cloud-join.sh "https://云控地址" "Token" "" "insecure" # 云控为自签 HTTPS 时免证书校验
 ############################################
 
 red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; plain='\033[0m'
@@ -13,6 +14,7 @@ red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; plain='\033[0m'
 CLOUD_URL="${1:-}"
 CLOUD_TOKEN="${2:-}"
 NODE_NAME="${3:-}"
+INSECURE="${4:-}"
 
 if [[ -z "$CLOUD_URL" || -z "$CLOUD_TOKEN" ]]; then
     echo -e "${red}用法: bash cloud-join.sh \"https://云控地址\" \"Token\" [自定义名称]${plain}"
@@ -62,10 +64,28 @@ echo ""
 # 写入云控配置（新增文件，不碰 config.json）
 ############################################
 mkdir -p /etc/V2bX /usr/local/V2bX
+
+# TLS 免校验决策: 显式第4参数 > 自动探测(严格连失败而 -k 连成功 = 自签) > 不启用
+NEED_INSECURE=""
+if [[ "$INSECURE" =~ ^(insecure|selfsign|-k|1)$ ]]; then
+  NEED_INSECURE=1
+  echo -e "${yellow}已按参数启用 TLS 免证书校验${plain}"
+elif [[ "$CLOUD_URL" == https:* ]]; then
+  if ! curl -sf --max-time 8 "$CLOUD_URL/" >/dev/null 2>&1; then
+    if curl -skf --max-time 8 "$CLOUD_URL/" >/dev/null 2>&1; then
+      NEED_INSECURE=1
+      echo -e "${yellow}检测到自签证书，自动启用免校验（正规证书不受影响）${plain}"
+    fi
+  fi
+fi
+CLOUD_INSECURE_LINE=""
+[[ "$NEED_INSECURE" == "1" ]] && CLOUD_INSECURE_LINE='CLOUD_INSECURE="1"'
+
 cat > /etc/V2bX/cloud.conf <<EOF
 CLOUD_URL="${CLOUD_URL}"
 CLOUD_TOKEN="${CLOUD_TOKEN}"
 NODE_NAME="${NODE_NAME}"
+${CLOUD_INSECURE_LINE}
 EOF
 
 curl -fsSL -o /usr/local/V2bX/cloud-agent.sh \

@@ -12,8 +12,10 @@ DOMAIN="${4:-}"
 # 第5个参数：是否启用内置 WARP 分流（on/off，默认 on）
 WARP_MODE="${5:-on}"
 # 第6/7个参数：云控中心地址与 Token（可选，接入后可在后台查看节点并批量下发配置）
+# 第8个参数：云控为自签 HTTPS 时传 insecure（心跳免证书校验）
 CLOUD_URL="${6:-}"
 CLOUD_TOKEN="${7:-}"
+CLOUD_INSECURE="${8:-}"
 
 WARP_ENABLED=true
 case "$WARP_MODE" in
@@ -595,10 +597,13 @@ systemctl daemon-reload
 ############################################
 if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
   echo "==== 接入云控中心: $CLOUD_URL ===="
+  CLOUD_INSECURE_LINE=""
+  [[ "$CLOUD_INSECURE" =~ ^(insecure|selfsign|-k|1)$ ]] && CLOUD_INSECURE_LINE='CLOUD_INSECURE="1"'
   cat > /etc/V2bX/cloud.conf <<EOF
 CLOUD_URL="${CLOUD_URL}"
 CLOUD_TOKEN="${CLOUD_TOKEN}"
 NODE_NAME="${NODE_NAME:-node${NODE_IDS[0]}-$(hostname -s 2>/dev/null || hostname)}"
+${CLOUD_INSECURE_LINE}
 EOF
   curl -fsSL -o /usr/local/V2bX/cloud-agent.sh \
     https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh && \

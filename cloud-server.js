@@ -180,7 +180,7 @@ function pickCfg(cfg) {
 const PER_NODE_FIELDS = ['NodeID']; // 差异化字段：禁止多目标批量下发
 
 // ---------- API ----------
-const server = http.createServer(async (req, res) => {
+const handler = async (req, res) => {
   const url = req.url.split('?')[0];
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
@@ -302,10 +302,24 @@ const server = http.createServer(async (req, res) => {
   }
 
   json(res, 404, { error: 'not found' });
-});
+};
+
+// ---------- TLS 可选: 设置 TLS_CERT/TLS_KEY 环境变量后以 HTTPS 监听（自签证书场景） ----------
+const TLS_CERT = process.env.TLS_CERT || '';
+const TLS_KEY = process.env.TLS_KEY || '';
+let server;
+let SCHEME = 'http';
+if (TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
+  const https = require('https');
+  server = https.createServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handler);
+  SCHEME = 'https';
+} else {
+  if (TLS_CERT || TLS_KEY) console.log('⚠️ TLS_CERT/TLS_KEY 指向的证书文件缺失，回退为 HTTP 明文监听');
+  server = http.createServer(handler);
+}
 
 server.listen(PORT, () => {
-  console.log('V2bX 云控中心已启动: http://0.0.0.0:' + PORT);
+  console.log('V2bX 云控中心已启动: ' + SCHEME + '://0.0.0.0:' + PORT + (SCHEME === 'https' ? '  (TLS 已启用)' : ''));
   if (isDefaultToken()) {
     console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
     console.log('!! 检测到默认 Token：管理接口与心跳已拒绝服务(403)。   !!');
