@@ -34,11 +34,12 @@ HOSTNAME="$(hostname 2>/dev/null)"
 VERSION=$(/usr/local/V2bX/V2bX version 2>/dev/null | grep -aoE 'V2bX [^ ]+' | head -1 | awk '{print $2}')
 RSS_MB=$(systemctl show V2bX -p MemoryCurrent --value 2>/dev/null | awk '{printf "%d", $1/1024/1024}')
 CONNS=$(ss -tan state established 2>/dev/null | wc -l)
-# 服务运行时长（微秒时间戳换算；算术表达式内不放命令替换，避免语法错误）
+# 服务运行时长（同为单调时钟: 开机秒数 - 服务启动单调时间）
 MONO_TS=$(systemctl show V2bX -p ActiveEnterTimestampMonotonic --value 2>/dev/null)
+UP_S=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
 SERVICE_UPTIME=0
-if [[ -n "$MONO_TS" && "$MONO_TS" != "0" ]]; then
-  SERVICE_UPTIME=$(( $(date +%s) - MONO_TS / 1000000 ))
+if [[ -n "$MONO_TS" && "$MONO_TS" != "0" && -n "$UP_S" ]]; then
+  SERVICE_UPTIME=$(( UP_S - MONO_TS / 1000000 ))
 fi
 [[ "$SERVICE_UPTIME" -lt 0 ]] && SERVICE_UPTIME=0
 LOAD=$(cat /proc/loadavg 2>/dev/null | awk '{print $1, $2, $3}')
