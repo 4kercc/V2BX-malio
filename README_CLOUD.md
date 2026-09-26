@@ -70,9 +70,26 @@ bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud
 - agent 日志进 journald：`journalctl -t v2bx-cloud`；升级日志：`/var/log/v2bx-cloud-update.log`；
 - 手动测试 agent：`/usr/local/V2bX/cloud-agent.sh && journalctl -t v2bx-cloud -n 5`。
 
-## 五、安全边界（务必阅读）
+## 五、安全模型（v2）
 
-1. Token 是唯一凭证：泄露 = 20 台节点配置可被任意改写。**必须 HTTPS**，Token 用 32 位以上随机串；
-2. 不要把控制中心直接裸奔在公网 HTTP 上；可再加 Nginx Basic Auth 双保险；
-3. agent 只接受有限字段（ApiHost/ApiKey/NodeID/CertDomain/Warp）与两个动作（restart/update），不执行任意命令；
-4. update 动作会执行 update-v2bx.sh（从本仓库 main 拉取）——请确保仓库安全（GitHub 账号开 2FA）。
+1. **双 Token 分离**：
+   - `token`（管理）——只用于后台登录与管理接口；
+   - `nodeToken`（节点）——只用于 agent 心跳，后台"全局设置"栏查看；
+   - **节点失陷不再等于全群失陷**：泄露某台节点的 nodeToken 只能伪造它的心跳，改不了任何配置。
+2. **默认 Token 门禁**：`cloud-data.json` 里的 token/nodeToken 未修改（仍是 changeme-*）时，服务端**拒绝所有接口（403）**并在控制台打印醒目警告，强制改密后才可用；
+3. **限速**：心跳每 IP 每分钟 10 次上限；认证失败每 IP 每分钟 10 次，超出返回 429——爆破不可行；
+4. **常量时间比较**：Token 校验使用 `crypto.timingSafeEqual`，无时序侧信道；
+5. **升级版本锁定**：后台"全局设置"可锁定升级版本（如 `v1.0.9`），"升级选中"动作将下发指定版本（留空 = 最新 Release），避免不可控的 main 分支滚动；
+6. **HTTPS 仍为强制要求**：用 Nginx/Caddy 反代启用 TLS 后再暴露公网——心跳请求体含各节点 ApiKey，明文可被嗅探；
+7. Token 泄露应急：编辑 `cloud-data.json` 换新 Token 重启进程，然后逐台更新节点 cloud.conf（或直接重跑 cloud-join.sh）。
+
+### 初次部署必做
+
+```bash
+# 生成两把随机密钥并写入 cloud-data.json
+NEW_ADMIN=$(openssl rand -hex 16); NEW_NODE=$(openssl rand -hex 16)
+node -e "const fs=require('fs');const f='cloud-data.json';const d=JSON.parse(fs.readFileSync(f));d.token=process.argv[1];d.nodeToken=process.argv[2];fs.writeFileSync(f,JSON.stringify(d,null,2))" $NEW_ADMIN $NEW_NODE
+pm2 restart cloud-server && echo "管理Token: $NEW_ADMIN / 节点Token: $NEW_NODE"
+```
+
+### 初次部署必做

@@ -3,14 +3,25 @@
  * V2BX-malio 云控中心（零依赖，单文件）
  * 运行：node cloud-server.js   （数据存放在同目录 cloud-data.json）
  * 端口：环境变量 PORT，默认 8765
- * 安全：必须用 Nginx/Caddy 反代加 HTTPS 后再暴露公网
+ *
+ * 安全模型（v2）：
+ *  - 双 Token：token=管理端专用，nodeToken=节点心跳专用（节点失陷不等于全群失陷）
+ *  - 心跳与失败认证均有 IP 级限速
+ *  - Token 常量时间比较
+ *  - 默认 Token 启动门禁：未改 Token 前拒绝服务（ALLOW_INSECURE_TOKEN=1 可临时绕过）
+ *  - 升级动作支持版本锁定（updateVersion，留空 = 最新 Release）
+ *  - 仍需自行用 Nginx/Caddy 反代启用 HTTPS 后再暴露公网
  */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const PORT = parseInt(process.env.PORT || '8765', 10);
 const DATA_FILE = path.join(__dirname, 'cloud-data.json');
+const DEFAULT_ADMIN = 'changeme-token';
+const DEFAULT_NODE = 'changeme-node-token';
+const ALLOW_INSECURE = process.env.ALLOW_INSECURE_TOKEN === '1';
 
 // ---------- Web 后台（单页） ----------
 const UI = `<!DOCTYPE html>
@@ -29,10 +40,11 @@ button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:7px 14px
 button.warn{background:#dc2626}button.ok{background:#059669}button.gray{background:#475569}
 #msg{margin:8px 0;color:#fbbf24;min-height:18px;font-size:13px}
 .small{font-size:11px;color:#94a3b8}
+#nodeToken{width:280px}
 </style></head><body>
 <h1>V2bX 云控中心 <span class="muted" id="cnt"></span></h1>
 <div class="bar">
-  <b>批量/单个下发</b>（仅填写修改的字段，留空不下发）<br>
+  <b>批量/单个下发</b>（仅填写修改的字段，留空不下发；NodeID 属差异化字段禁止批量）<br>
   <input id="fApiHost" placeholder="ApiHost 例: https://new.panel.com">
   <input id="fApiKey" placeholder="ApiKey">
   <input id="fNodeId" placeholder="NodeID(数字)" style="width:110px">
@@ -45,6 +57,13 @@ button.warn{background:#dc2626}button.ok{background:#059669}button.gray{backgrou
   <button class="gray" onclick="clearDesired()">清除选中节点的期望配置</button>
   <span class="small">节点在下一个心跳周期(≤2分钟)内自动应用并重启</span>
 </div>
+<div class="bar">
+  <b>全局设置</b><br>
+  节点接入 Token: <input id="sNodeToken" readonly>
+  <span class="small">（cloud-join.sh / agent 心跳专用，与管理 Token 分离）</span><br>
+  升级版本锁定: <input id="sUpdateVer" placeholder="留空=最新 Release，如 v1.0.9" style="width:240px">
+  <button class="gray" onclick="saveSettings()">保存设置</button>
+</div>
 <div id="msg"></div>
 <table><thead><tr>
 <th></th><th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板/节点ID</th><th>最后心跳</th><th>待下发</th>
@@ -54,7 +73,10 @@ const T=localStorage.getItem('cloudToken')||prompt('请输入管理 Token（服�
 localStorage.setItem('cloudToken',T);
 let NODES=[];
 async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
- if(r.status===401){alert('Token 错误');localStorage.removeItem('cloudToken');location.reload();}return r.json();}
+ const j=await r.json().catch(()=>({}));
+ if(r.status===401){alert('Token 错误');localStorage.removeItem('cloudToken');location.reload();return j;}
+ if(r.status===403){document.getElementById('msg').textContent=j.error||'被拒绝';}
+ return j;}
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
 function render(){const tb=document.getElementById('tb');document.getElementById('cnt').textContent='('+NODES.filter(n=>n.online).length+'/'+NODES.length+' 在线)';
  tb.innerHTML=NODES.map(n=>'<tr>'+
@@ -66,37 +88,76 @@ function render(){const tb=document.getElementById('tb');document.getElementById
  '<td class="small">'+((n.info.cfg&&n.info.cfg.ApiHost)||'')+'<br>NodeID '+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</td>'+
  '<td class="small">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?JSON.stringify(n.desired):'-')+'</td></tr>').join('');}
-async function refresh(){try{const d=await api('/api/nodes');NODES=d.nodes||[];render();}catch(e){}}
+async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
+ document.getElementById('sNodeToken').value=d.nodeToken||'';
+ if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
+ render();}catch(e){}}
 function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){alert('请先勾选节点');return null;}return s;}
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){alert('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
- const d=await api('/api/desired',{targets:t,fields:f});show('已下发到 '+d.applied+' 个节点: '+JSON.stringify(d.fields));}
+ const d=await api('/api/desired',{targets:t,fields:f});show(d.error?('被拒绝: '+d.error):('已下发到 '+d.applied+' 个节点: '+JSON.stringify(d.fields)));}
 async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
- const d=await api('/api/desired',{targets:'all',fields:f});show('已下发到全部 '+d.applied+' 个节点');}
+ const d=await api('/api/desired',{targets:'all',fields:f});show(d.error?('被拒绝: '+d.error):('已下发到全部 '+d.applied+' 个节点'));}
 async function doAction(a){const t=targets();if(!t)return;if(!confirm(a==='update'?'确认升级选中节点？':'确认重启选中节点？'))return;
- await api('/api/action',{targets:t,action:a});show('动作已排队: '+a);}
+ const d=await api('/api/action',{targets:t,action:a});show(d.error?('被拒绝: '+d.error):('动作已排队: '+d.action+(d.version?' (锁定版本 '+d.version+')':' (最新版)')));}
 async function clearDesired(){const t=targets();if(!t)return;await api('/api/desired/clear',{targets:t});show('已清除期望配置');}
+async function saveSettings(){const v=document.getElementById('sUpdateVer').value.trim();
+ const d=await api('/api/settings',{updateVersion:v});show(d.error?('被拒绝: '+d.error):('设置已保存: 升级版本锁定 = '+(v||'最新版')));}
 function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
 refresh();setInterval(refresh,5000);
 </script></body></html>`;
 
-// ---------- 数据存储 ----------
+// ---------- 数据存储（含 v1 → v2 迁移） ----------
 function loadData() {
+  let d;
   try {
-    return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    d = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   } catch (e) {
-    const fresh = { token: 'changeme-token', nodes: {} };
-    saveData(fresh);
-    return fresh;
+    d = { token: DEFAULT_ADMIN, nodeToken: DEFAULT_NODE, updateVersion: '', nodes: {} };
   }
+  if (!d.nodeToken) d.nodeToken = d.token; // 旧版数据迁移
+  if (d.updateVersion === undefined) d.updateVersion = '';
+  if (!d.nodes) d.nodes = {};
+  return d;
 }
 function saveData(d) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(d, null, 2));
 }
 let data = loadData();
+saveData(data);
 
-// ---------- 工具 ----------
+// ---------- 安全工具 ----------
+function safeEqual(a, b) {
+  // 常量时间比较：先哈希定长再比，避免长度/时序侧信道
+  const ha = crypto.createHash('sha256').update(String(a)).digest();
+  const hb = crypto.createHash('sha256').update(String(b)).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+function isDefaultToken() {
+  return data.token === DEFAULT_ADMIN || data.nodeToken === DEFAULT_NODE;
+}
+function defaultTokenBlocked() {
+  return isDefaultToken() && !ALLOW_INSECURE;
+}
+
+// IP 级限速：滑动窗口计数（零依赖内存实现）
+const rateBuckets = new Map(); // key -> {count, resetAt}
+function rateLimit(key, max, windowMs) {
+  const now = Date.now();
+  let b = rateBuckets.get(key);
+  if (!b || now > b.resetAt) {
+    b = { count: 0, resetAt: now + windowMs };
+    rateBuckets.set(key, b);
+  }
+  b.count++;
+  if (rateBuckets.size > 10000) { // 防表膨胀
+    for (const [k, v] of rateBuckets) if (now > v.resetAt) rateBuckets.delete(k);
+  }
+  return b.count <= max;
+}
+
+// ---------- HTTP 工具 ----------
 function send(res, code, body, type) {
   res.writeHead(code, { 'Content-Type': type || 'application/json; charset=utf-8' });
   res.end(body);
@@ -116,8 +177,7 @@ function pickCfg(cfg) {
   }
   return out;
 }
-// 差异化字段：每台节点各不相同，禁止多目标/全部批量下发，只能单台设置
-const PER_NODE_FIELDS = ['NodeID'];
+const PER_NODE_FIELDS = ['NodeID']; // 差异化字段：禁止多目标批量下发
 
 // ---------- API ----------
 const server = http.createServer(async (req, res) => {
@@ -127,9 +187,14 @@ const server = http.createServer(async (req, res) => {
   // Web 后台
   if (url === '/' || url === '/ui') { send(res, 200, UI, 'text/html; charset=utf-8'); return; }
 
-  // 节点心跳
+  // ---------- 节点心跳（节点专用 nodeToken + 限速） ----------
   if (url === '/api/heartbeat' && req.method === 'POST') {
-    if (req.headers['x-token'] !== data.token) return json(res, 401, { error: 'bad token' });
+    if (!rateLimit('hb:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
+      rateLimit('fail:' + ip, 10, 60000);
+      return json(res, 401, { error: 'bad token' });
+    }
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用，请在服务端 cloud-data.json 修改 nodeToken 后重启' });
     const body = await readBody(req);
     const name = String(body.name || 'unknown').slice(0, 64);
     const key = name + '|' + ip;
@@ -143,15 +208,25 @@ const server = http.createServer(async (req, res) => {
       uptime_sec: body.uptime_sec || 0, warp: body.warp || 'unknown',
       cfg: body.cfg || {}, load: body.load || ''
     };
-    const reply = { desired: rec.desired || null, action: rec.pendingAction || 'none' };
-    if (rec.pendingAction) rec.pendingAction = null; // 动作一次性下发
+    const pending = rec.pendingAction;
+    const reply = { desired: rec.desired || null, action: pending || 'none' };
+    if (pending === 'update') reply.version = data.updateVersion || '';
+    if (pending) rec.pendingAction = null; // 动作一次性下发
     data.nodes[key] = rec;
     saveData(data);
     return json(res, 200, reply);
   }
 
-  // ---------- 后台管理接口 ----------
-  if (req.headers['x-token'] !== data.token) return json(res, 401, { error: 'unauthorized' });
+  // ---------- 管理接口（管理 Token + 失败限速 + 默认 Token 门禁） ----------
+  if (url !== '/api/token') {
+    if (!safeEqual(req.headers['x-token'], data.token)) {
+      if (!rateLimit('fail:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+      return json(res, 401, { error: 'unauthorized' });
+    }
+    if (defaultTokenBlocked()) {
+      return json(res, 403, { error: '默认管理 Token 禁止使用：请编辑 cloud-data.json 将 token 与 nodeToken 改为随机强串后重启本进程（开发调试可用 ALLOW_INSECURE_TOKEN=1 临时绕过）' });
+    }
+  }
 
   if (url === '/api/nodes' && req.method === 'GET') {
     const now = Date.now();
@@ -160,14 +235,13 @@ const server = http.createServer(async (req, res) => {
       online: now - n.lastSeen < 5 * 60 * 1000, info: n.info,
       desired: n.desired || null
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
-    return json(res, 200, { token: data.token, nodes: list });
+    return json(res, 200, { token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion, nodes: list });
   }
 
   if (url === '/api/desired' && req.method === 'POST') {
     const body = await readBody(req);
     const fields = pickCfg(body.fields);
     if (!Object.keys(fields).length) return json(res, 400, { error: 'no fields' });
-    // 差异化字段保护：NodeID 每台节点不同，禁止批量覆盖
     const isBatch = body.targets === 'all' || (Array.isArray(body.targets) && body.targets.length > 1);
     if (isBatch) {
       const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k));
@@ -204,13 +278,27 @@ const server = http.createServer(async (req, res) => {
       if (body.targets === 'all' || (body.targets || []).includes(key)) { n.pendingAction = act; count++; }
     }
     saveData(data);
-    return json(res, 200, { ok: true, queued: count, action: act });
+    return json(res, 200, { ok: true, queued: count, action: act, version: act === 'update' ? (data.updateVersion || '') : undefined });
+  }
+
+  if (url === '/api/settings' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (body.updateVersion !== undefined) {
+      const v = String(body.updateVersion).trim();
+      if (v && !/^v[0-9][\w.\-]*$/.test(v)) return json(res, 400, { error: '版本号格式非法（示例: v1.0.9）' });
+      data.updateVersion = v;
+    }
+    if (body.newNodeToken && String(body.newNodeToken).length >= 16) {
+      data.nodeToken = String(body.newNodeToken);
+    }
+    saveData(data);
+    return json(res, 200, { ok: true, nodeToken: data.nodeToken, updateVersion: data.updateVersion });
   }
 
   if (url === '/api/token' && req.method === 'POST') {
     const body = await readBody(req);
-    if (body.newToken && body.newToken.length >= 8) { data.token = body.newToken; saveData(data); return json(res, 200, { ok: true }); }
-    return json(res, 400, { error: 'token too short (>=8)' });
+    if (body.newToken && String(body.newToken).length >= 16) { data.token = String(body.newToken); saveData(data); return json(res, 200, { ok: true }); }
+    return json(res, 400, { error: 'token too short (>=16)' });
   }
 
   json(res, 404, { error: 'not found' });
@@ -218,6 +306,16 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log('V2bX 云控中心已启动: http://0.0.0.0:' + PORT);
-  console.log('管理 Token: ' + data.token + '  （修改: 编辑 ' + DATA_FILE + ' 后重启本进程）');
-  console.log('强烈建议: 用 Nginx/Caddy 反代并启用 HTTPS 后再暴露公网');
+  if (isDefaultToken()) {
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+    console.log('!! 检测到默认 Token：管理接口与心跳已拒绝服务(403)。   !!');
+    console.log('!! 请编辑 ' + DATA_FILE);
+    console.log('!! 将 token / nodeToken 改为随机强串（openssl rand -hex 16）');
+    console.log('!! 后重启本进程。开发调试可设 ALLOW_INSECURE_TOKEN=1 绕过。');
+    console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+  } else {
+    console.log('管理 Token 与节点 Token 已分离，安全模式: 正常');
+  }
+  console.log('升级版本锁定: ' + (data.updateVersion || '最新 Release'));
+  console.log('安全要求: 用 Nginx/Caddy 反代并启用 HTTPS 后再暴露公网');
 });

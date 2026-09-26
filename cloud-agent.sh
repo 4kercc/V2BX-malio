@@ -158,8 +158,15 @@ if [[ "$ACTION" == "restart" ]]; then
   exit 0
 fi
 if [[ "$ACTION" == "update" ]]; then
-  log "action: starting self-update"
-  nohup bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/update-v2bx.sh) >> /var/log/v2bx-cloud-update.log 2>&1 &
+  # 版本锁定: 服务端可指定 Release 版本，留空 = 最新
+  VER=$(echo "$RESP" | jq -r ".version // empty" 2>/dev/null)
+  if [[ -n "$VER" && "$VER" != "null" ]]; then
+    log "action: self-update (pinned $VER)"
+    nohup v2bx update "$VER" >> /var/log/v2bx-cloud-update.log 2>&1 &
+  else
+    log "action: self-update (latest)"
+    nohup bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/update-v2bx.sh) >> /var/log/v2bx-cloud-update.log 2>&1 &
+  fi
   exit 0
 fi
 
