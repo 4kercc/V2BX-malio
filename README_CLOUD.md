@@ -33,19 +33,19 @@ node cloud-server.js          # 首次运行自动生成 cloud-data.json
 bash install_v2bx_anytls.sh "https://面板" "密钥" "节点ID" "域名或null" on "https://云控中心地址" "云控Token"
 ```
 
-存量节点补装（不影响现有配置）：
+存量节点补装（**零改动接入**：不碰 config.json、不重启 V2bX，业务无感知）：
 
 ```bash
-# 写入配置（TOKEN/URL 替换为实际值）
-cat > /etc/V2bX/cloud.conf <<EOF
-CLOUD_URL="https://cloud.example.com"
-CLOUD_TOKEN="your-token"
-NODE_NAME="node12-$(hostname -s)"
-EOF
-curl -fsSL -o /usr/local/V2bX/cloud-agent.sh https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh
-chmod +x /usr/local/V2bX/cloud-agent.sh
-(crontab -l 2>/dev/null | grep -v cloud-agent.sh; echo "*/2 * * * * /usr/local/V2bX/cloud-agent.sh >/dev/null 2>&1") | crontab -
+bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) "https://云控中心地址" "云控Token"
+# 可选第三参数自定义名称: ... "Token" "hk-iepl-01"
 ```
+
+## 二点五、批量接入时如何判定"哪台是谁"
+
+- **自动命名**：接入脚本自动读取节点现有配置里的 `NodeID`，命名为 `node{NodeID}-{主机名}`（如 `node12-wowtank`），后台名称列直接对上面板节点；
+- **实时身份**：后台表格"面板/节点ID"列每个心跳周期都从该机真实 config.json 读取显示，改了配置表格同步变，不会张冠李戴；
+- **防串号**：服务端节点身份 = `名称 + 出口IP`，同名不同机的节点也不会合并混淆；
+- 20 台批量接入：在你的一键下发后台逐台粘贴上面单行命令即可，每台自动起名，无需人工登记。
 
 ## 三、后台操作
 
