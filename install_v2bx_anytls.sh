@@ -11,6 +11,9 @@ NODE_ID="${3:-}"
 DOMAIN="${4:-}"
 # 第5个参数：是否启用内置 WARP 分流（on/off，默认 on）
 WARP_MODE="${5:-on}"
+# 第6/7个参数：云控中心地址与 Token（可选，接入后可在后台查看节点并批量下发配置）
+CLOUD_URL="${6:-}"
+CLOUD_TOKEN="${7:-}"
 
 WARP_ENABLED=true
 case "$WARP_MODE" in
@@ -586,6 +589,23 @@ EOF
 (crontab -l 2>/dev/null | grep -v "systemctl restart V2bX"; echo "0 3 */5 * * systemctl restart V2bX") | crontab - || true
 
 systemctl daemon-reload
+
+############################################
+# 云控 Agent（可选：传入第6/7参数自动接入云端）
+############################################
+if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
+  echo "==== 接入云控中心: $CLOUD_URL ===="
+  cat > /etc/V2bX/cloud.conf <<EOF
+CLOUD_URL="${CLOUD_URL}"
+CLOUD_TOKEN="${CLOUD_TOKEN}"
+NODE_NAME="${NODE_NAME:-node${NODE_IDS[0]}-$(hostname -s 2>/dev/null || hostname)}"
+EOF
+  curl -fsSL -o /usr/local/V2bX/cloud-agent.sh \
+    https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh && \
+    chmod +x /usr/local/V2bX/cloud-agent.sh
+  (crontab -l 2>/dev/null | grep -v "cloud-agent.sh"; echo "*/2 * * * * /usr/local/V2bX/cloud-agent.sh >/dev/null 2>&1") | crontab - || true
+  echo "✓ 云控 Agent 已安装（每 2 分钟心跳上报+配置拉取）"
+fi
 
 ############################################
 # restart
