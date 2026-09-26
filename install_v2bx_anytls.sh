@@ -430,7 +430,7 @@ cat <<EOF > ${CONFIG_DIR}/sing_origin_warp.json
       ],
       "url": "https://www.google.com/generate_204",
       "interval": "1m",
-      "tolerance": 50,
+      "tolerance": 5000,
       "idle_timeout": "30m"
     },
     {

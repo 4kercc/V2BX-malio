@@ -52,6 +52,12 @@ if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
 fi
 sysctl -w vm.swappiness=10 >/dev/null 2>&1 || true
 
+# 0.5 存量 WARP 模板对齐：tolerance 50 -> 5000（保证 WARP 优先、仅失效时回落直连）
+if [[ -f /etc/V2bX/sing_origin_warp.json ]] && grep -q '"tolerance": 50' /etc/V2bX/sing_origin_warp.json; then
+    sed -i 's/"tolerance": 50/"tolerance": 5000/' /etc/V2bX/sing_origin_warp.json
+    echo -e "${green}✓ WARP urltest tolerance 已对齐为 5000（下次切换 warp on 时生效）${plain}"
+fi
+
 if [[ ! -f /etc/systemd/system/V2bX.service.d/override.conf ]]; then
     mkdir -p /etc/systemd/system/V2bX.service.d
     cat > /etc/systemd/system/V2bX.service.d/override.conf <<EOF
