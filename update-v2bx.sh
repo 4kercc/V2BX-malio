@@ -40,6 +40,13 @@ echo -e "${green}✓ 管理脚本已刷新到最新${plain}"
 # 第 2 步：对齐内存与系统调优（幂等，已配置的自动跳过）
 ############################################
 echo -e "${green}==== 第 2 步：对齐内存与系统调优 ====${plain}"
+
+# 0. 存量服务器日志级别对齐：debug -> info（恢复每分钟连接/流量报告，又不过度刷屏）
+if [[ -f /etc/V2bX/config.json ]] && grep -q '"Level": "debug"' /etc/V2bX/config.json; then
+    sed -i '0,/"Level": "debug"/s//"Level": "info"/' /etc/V2bX/config.json
+    echo -e "${green}✓ 主日志级别已从 debug 调整为 info${plain}"
+fi
+
 if ! grep -q "vm.swappiness" /etc/sysctl.conf 2>/dev/null; then
     echo "vm.swappiness=10" >> /etc/sysctl.conf
 fi

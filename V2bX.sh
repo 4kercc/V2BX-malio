@@ -908,7 +908,7 @@ generate_config_file() {
     cat <<EOF > /etc/V2bX/config.json
 {
     "Log": {
-        "Level": "error",
+        "Level": "info",
         "Output": ""
     },
     "Cores": $cores_config,
