@@ -83,7 +83,7 @@ input::placeholder{color:hsl(var(--muted-fg))}
 .btn-destructive{background:hsl(var(--destructive));color:hsl(var(--destructive-fg))}
 .btn-sm{height:32px;padding:0 10px;font-size:12px}
 .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;flex-wrap:wrap}
-.head-r{display:flex;align-items:center;gap:8px}
+.head-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .tbwrap{overflow-x:auto;border:1px solid hsl(var(--border));border-radius:var(--radius)}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:960px}
 th{background:hsl(var(--muted));color:hsl(var(--muted-fg));font-weight:500;text-align:left;padding:9px 12px;white-space:nowrap}
@@ -105,7 +105,9 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
 #msg{margin:0 0 12px;color:hsl(var(--warn));min-height:18px;font-size:13px}
 .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99;align-items:center;justify-content:center;padding:16px}
 .modal.show{display:flex}
-.modal-box{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);padding:24px;max-width:520px;width:100%;box-shadow:0 16px 48px rgba(0,0,0,.4)}
+.modal-box{background:hsl(var(--card));border:1px solid hsl(var(--border));border-radius:var(--radius);padding:24px;max-width:520px;width:100%;box-shadow:0 16px 48px rgba(0,0,0,.4);max-height:88vh;overflow-y:auto}
+.modal-box .sect{margin-bottom:12px}
+.modal-box .sect input{width:100%}
 .modal-box h3{margin:0 0 12px;font-size:15px;font-weight:600}
 .modal-box ul{margin:8px 0 14px;padding-left:18px;font-size:13px;line-height:1.9;color:hsl(var(--muted-fg))}
 .modal-box .foot{font-size:11px;color:hsl(var(--muted-fg))}
@@ -121,6 +123,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
    <span class="muted" id="lastRefresh"></span>
    <button class="btn btn-ghost btn-sm" onclick="refresh()">↻ 刷新</button>
    <button class="btn btn-outline btn-sm" id="autoBtn" onclick="toggleAuto()">自动刷新: 开</button>
+   <button class="btn btn-outline btn-sm" onclick="showSettings()">⚙ 全局设置</button>
    <button class="btn btn-ghost btn-sm" id="themeBtn" onclick="toggleTheme()">🌙</button>
    <button class="btn btn-ghost btn-sm" onclick="logout()" title="退出登录">退出</button>
  </div>
@@ -146,48 +149,6 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
 </div>
-
-<div class="card">
- <p class="card-title">全局设置</p>
- <div class="grid-form" style="grid-template-columns:1fr">
-  <div>
-   <div class="muted" style="margin-bottom:4px">节点接入 Token <span>（cloud-join.sh / agent 心跳专用，与管理 Token 分离）</span></div>
-   <input id="sNodeToken" readonly>
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">一键对接脚本 <span>（粘贴到节点服务器以 root 执行即完成接入，自签证书自动识别）</span></div>
-   <div style="display:flex;gap:8px">
-    <input id="joinCmd" readonly style="font-family:ui-monospace,Consolas,monospace;font-size:12px">
-    <button class="btn btn-outline" style="flex:0 0 auto" onclick="copyJoin()">复制</button>
-   </div>
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">升级版本锁定 <span>（留空 = 最新 Release）</span></div>
-   <div style="display:flex;gap:8px">
-    <input id="sUpdateVer" placeholder="如 v1.0.9" style="flex:1">
-    <button class="btn btn-outline" style="flex:0 0 auto" onclick="saveSettings()">保存设置</button>
-   </div>
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">Agent 目标版本 <span>（数字，与节点上报不一致时自动自更新；留空关闭）</span></div>
-   <input id="sAgentVer" placeholder="如 6">
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">Telegram Bot Token <span>（告警推送，可留空）</span></div>
-   <input id="sTgBot" placeholder="123456:ABC-DEF...">
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">Telegram Chat ID</div>
-   <input id="sTgChat" placeholder="-100123456789">
-  </div>
-  <div>
-   <div class="muted" style="margin-bottom:4px">Webhook URL <span>（备选告警通道）</span></div>
-   <input id="sWebhook" placeholder="https://...">
-  </div>
- </div>
- <div class="row"><button class="btn btn-outline btn-sm" onclick="saveSettings()">保存全部设置</button></div>
-</div>
-
 <div id="msg"></div>
 
 <div class="card">
@@ -223,6 +184,7 @@ function toggleTheme(){var t=document.documentElement.classList.contains('dark')
 applyTheme(localStorage.getItem('cloudTheme')||'dark');
 
 let NODES=[];
+let SETTINGS={}; // 全局设置缓存（表单在弹窗里，关闭时 DOM 不存在）
 // 会话由服务端 Cookie 维护，前端不再持有/传递任何 Token
 async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,credentials:'same-origin'});
  const j=await r.json().catch(()=>({}));
@@ -299,13 +261,10 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
 let AUTO=true;let pollTimer=null;
 function pollMs(){const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));return inflight?3000:5000;}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
- document.getElementById('sNodeToken').value=d.nodeToken||'';
- document.getElementById('joinCmd').value='bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) "'+location.origin+'" "'+(d.nodeToken||'')+'"';
- if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
- if(document.getElementById('sAgentVer')!==document.activeElement)document.getElementById('sAgentVer').value=d.agentVersion||'';
- if(document.getElementById('sTgBot')!==document.activeElement)document.getElementById('sTgBot').value=d.tgBotToken||'';
- if(document.getElementById('sTgChat')!==document.activeElement)document.getElementById('sTgChat').value=d.tgChatId||'';
- if(document.getElementById('sWebhook')!==document.activeElement)document.getElementById('sWebhook').value=d.webhookUrl||'';
+ SETTINGS={nodeToken:d.nodeToken||'',
+  joinCmd:'bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) "'+location.origin+'" "'+(d.nodeToken||'')+'"',
+  updateVersion:d.updateVersion||'',agentVersion:d.agentVersion||'',tgBotToken:d.tgBotToken||'',tgChatId:d.tgChatId||'',webhookUrl:d.webhookUrl||''};
+ syncSettingsForm(); // 设置弹窗若已打开，同步最新值（不覆盖正在编辑的字段）
  render();
  const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));
  document.getElementById('lastRefresh').textContent='上次刷新 '+new Date().toLocaleTimeString()+(inflight&&AUTO?' · ⚡ 任务执行中 3s 快速轮询':'');}catch(e){}}
@@ -364,7 +323,7 @@ async function sendDesiredAll(){const f=gather();if(!f)return;if(!Object.keys(f)
    '执行规则: 与节点当前配置一致则跳过；有差异才修改并自动重启'
  ], '完成后「待下发」列清空即代表已应用');}
 async function doAction(a){const t=targets();if(!t)return;
- const ver=document.getElementById('sUpdateVer').value.trim();
+ const ver=(SETTINGS.updateVersion||'').trim(); // 设置弹窗可能未打开，读缓存
  if(!await uiConfirmP(a==='update'?('确认升级选中节点？'+(ver?('（锁定版本 '+ver+'）'):'（最新版）')):'确认重启选中节点？'))return;
  const d=await api('/api/action',{targets:t,action:a});
  if(d.error){show('被拒绝: '+d.error);return;}
@@ -380,16 +339,51 @@ async function doAction(a){const t=targets();if(!t)return;
    '状态流转: ⏳ 排队中 → 🔄 已下发(等心跳) → ✅ 已完成<br>页面自动刷新，有任务时 3 秒一次');}
 async function clearDesired(){const t=targets();if(!t)return;await api('/api/desired/clear',{targets:t});show('已清除期望配置');}
 async function saveSettings(){const v=document.getElementById('sUpdateVer').value.trim();
+ const av=document.getElementById('sAgentVer').value.trim();
  const d=await api('/api/settings',{updateVersion:v,
-  agentVersion:document.getElementById('sAgentVer').value.trim(),
+  agentVersion:av,
   tgBotToken:document.getElementById('sTgBot').value.trim(),
   tgChatId:document.getElementById('sTgChat').value.trim(),
   webhookUrl:document.getElementById('sWebhook').value.trim()});
- show(d.error?('被拒绝: '+d.error):('✓ 设置已保存（'+(d.error?'':(v?'版本锁定 '+v:'最新版')+' / Agent '+(document.getElementById('sAgentVer').value.trim()||'关闭自更新')+' / 告警通道已更新）')));}
-function copyJoin(){const v=document.getElementById('joinCmd').value;
- if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(()=>show('✓ 对接脚本已复制到剪贴板')).catch(()=>{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');});}
- else{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');}}
-function fallbackCopy(v){const i=document.getElementById('joinCmd');i.focus();i.select();document.execCommand('copy');}
+ // 结果写在弹窗内（弹窗关闭时回退到页头提示）
+ const el=document.getElementById('setMsg');
+ const msg=d.error?('被拒绝: '+d.error):('✓ 已保存（'+(v?'版本锁定 '+v:'最新版')+' / Agent '+(av||'关闭自更新')+' / 告警通道已更新）');
+ if(el)el.textContent=msg;else show(msg);
+ refresh();}
+function copyJoin(){const i=document.getElementById('joinCmd');if(!i)return;const v=i.value;
+ const done=function(ok){const el=document.getElementById('setMsg');const m=ok?'✓ 对接脚本已复制到剪贴板':'复制失败，请手动选中后复制';
+  if(el)el.textContent=m;else show(m);};
+ if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(function(){done(true);}).catch(function(){done(fallbackCopy(v));});}
+ else{done(fallbackCopy(v));}}
+function fallbackCopy(v){const i=document.getElementById('joinCmd');if(!i)return false;i.focus();i.select();
+ try{return document.execCommand('copy');}catch(e){return false;}}
+// ---------- 全局设置弹窗（右上角入口；字段不再常驻页面） ----------
+function escAttr(v){return String(v==null?'':v).split('&').join('&amp;').split('"').join('&quot;').split('<').join('&lt;');}
+function closeModal(){document.getElementById('modal').classList.remove('show');}
+function syncSettingsForm(){ // 弹窗未打开时直接返回
+ if(!document.getElementById('sUpdateVer'))return;
+ const pair=[['sUpdateVer','updateVersion'],['sAgentVer','agentVersion'],['sTgBot','tgBotToken'],['sTgChat','tgChatId'],['sWebhook','webhookUrl']];
+ for(const p of pair){const el=document.getElementById(p[0]);if(el&&el!==document.activeElement)el.value=SETTINGS[p[1]]||'';}
+ const nt=document.getElementById('sNodeToken');if(nt)nt.value=SETTINGS.nodeToken||'';
+ const jc=document.getElementById('joinCmd');if(jc)jc.value=SETTINGS.joinCmd||'';}
+function showSettings(){
+ const f=function(label,hint,id,ph,val){return '<div class="sect"><div class="muted">'+label+(hint?' <span>（'+hint+'）</span>':'')+'</div>'
+  +'<input id="'+id+'" placeholder="'+ph+'" value="'+escAttr(val)+'"></div>';};
+ document.getElementById('modalBox').innerHTML='<h3>⚙ 全局设置</h3>'
+  +'<div class="sect"><div class="muted">节点接入 Token <span>（cloud-join.sh / agent 心跳专用，与管理 Token 分离）</span></div>'
+  +'<input id="sNodeToken" readonly value="'+escAttr(SETTINGS.nodeToken)+'"></div>'
+  +'<div class="sect"><div class="muted">一键对接脚本 <span>（粘贴到节点服务器以 root 执行即完成接入）</span></div>'
+  +'<div style="display:flex;gap:8px"><input id="joinCmd" readonly style="flex:1;min-width:0;font-family:ui-monospace,Consolas,monospace;font-size:12px" value="'+escAttr(SETTINGS.joinCmd)+'">'
+  +'<button class="btn btn-outline" style="flex:0 0 auto" onclick="copyJoin()">复制</button></div></div>'
+  +f('升级版本锁定','留空 = 最新 Release','sUpdateVer','如 v1.0.9',SETTINGS.updateVersion)
+  +f('Agent 目标版本','与节点上报不一致时自动自更新；留空关闭','sAgentVer','如 8',SETTINGS.agentVersion)
+  +f('Telegram Bot Token','告警推送，可留空','sTgBot','123456:ABC-DEF...',SETTINGS.tgBotToken)
+  +f('Telegram Chat ID','','sTgChat','-100123456789',SETTINGS.tgChatId)
+  +f('Webhook URL','备选告警通道','sWebhook','https://...',SETTINGS.webhookUrl)
+  +'<div class="sect" style="display:flex;gap:8px"><button class="btn btn-primary" onclick="saveSettings()">保存全部设置</button>'
+  +'<button class="btn btn-ghost" onclick="closeModal()">关闭</button></div>'
+  +'<div class="foot" id="setMsg"></div>';
+ document.getElementById('modal').classList.add('show');}
 function showModal(title,lines,foot){
  document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3><ul>'+lines.map(l=>'<li>'+l+'</li>').join('')+'</ul><div class="foot">'+foot+'</div><button class="btn btn-primary" id="modalOk" style="margin-top:12px">知道了</button>';
  document.getElementById('modalOk').onclick=function(){document.getElementById('modal').classList.remove('show');};
