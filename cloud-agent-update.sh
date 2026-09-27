@@ -18,7 +18,6 @@ set -u
 REPO_RAW="https://raw.githubusercontent.com/4kercc/V2BX-malio/main"
 CONF="/etc/V2bX/cloud.conf"
 DIR="/usr/local/V2bX"
-CB="?cb=$(date +%s)"   # 破坏 CDN 缓存，避免拉到旧版
 red=$'\033[31m'; green=$'\033[32m'; yellow=$'\033[33m'; cyan=$'\033[36m'; plain=$'\033[0m'
 
 [[ $EUID -eq 0 ]] || { echo -e "${red}请用 root 执行${plain}"; exit 1; }
@@ -55,7 +54,7 @@ fi
 if [[ "$MODE" == "join" ]]; then
   echo -e "${cyan}== 检测到参数，执行全新安装 / 重新对接 ==${plain}"
   TMP=$(mktemp /tmp/v2bx-join.XXXXXX.sh)
-  if ! curl -fsSL -o "$TMP" "$REPO_RAW/cloud-join.sh$CB"; then
+  if ! curl -fsSL -o "$TMP" "$REPO_RAW/cloud-join.sh"; then
     echo -e "${red}cloud-join.sh 下载失败，请检查节点网络（未做任何改动）${plain}"; rm -f "$TMP"; exit 1
   fi
   bash -n "$TMP" 2>/dev/null || { echo -e "${red}下载的脚本校验失败，已放弃（未做任何改动）${plain}"; rm -f "$TMP"; exit 1; }
@@ -67,7 +66,7 @@ fi
 
 # ================= 模式 B: 已接入 —— 更新到最新 =================
 echo -e "${cyan}== 1/4 更新 agent ==${plain}"
-curl -fsSL -o "$DIR/cloud-agent.sh.new" "$REPO_RAW/cloud-agent.sh$CB" || {
+curl -fsSL -o "$DIR/cloud-agent.sh.new" "$REPO_RAW/cloud-agent.sh" || {
   echo -e "${red}agent 下载失败，请检查节点网络（未做任何改动）${plain}"; rm -f "$DIR/cloud-agent.sh.new"; exit 1; }
 bash -n "$DIR/cloud-agent.sh.new" 2>/dev/null || {
   echo -e "${red}下载的 agent 校验失败，已放弃（未做任何改动）${plain}"; rm -f "$DIR/cloud-agent.sh.new"; exit 1; }
@@ -77,7 +76,7 @@ echo -e "  ${green}✓${plain} agent 版本: $(grep -oP 'AGENT_VER="\K[0-9]+' "$
 
 echo -e "${cyan}== 2/4 更新长轮询守护 ==${plain}"
 DAEMON_OK=0
-if curl -fsSL -o "$DIR/cloud-agent-daemon.sh.new" "$REPO_RAW/cloud-agent-daemon.sh$CB"; then
+if curl -fsSL -o "$DIR/cloud-agent-daemon.sh.new" "$REPO_RAW/cloud-agent-daemon.sh"; then
   if bash -n "$DIR/cloud-agent-daemon.sh.new" 2>/dev/null; then
     mv -f "$DIR/cloud-agent-daemon.sh.new" "$DIR/cloud-agent-daemon.sh"; chmod +x "$DIR/cloud-agent-daemon.sh"; DAEMON_OK=1
   else
