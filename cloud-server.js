@@ -146,6 +146,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-ghost" onclick="clearDesired()">清除选中节点的期望配置</button>
   <input id="fGroup" placeholder="分组标签" style="width:140px;height:32px">
   <button class="btn btn-outline btn-sm" onclick="setGroup()">设置选中分组</button>
+  <button class="btn btn-outline btn-sm" onclick="showCert()">🔐 证书到期</button>
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
 </div>
@@ -292,6 +293,29 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
  ], '指标每 2 分钟采集一次：近 3 小时明细 + 7 天降采样');}
+function certDaysHtml(d){if(d===null||d===undefined||d==='')return '<span class="muted">未上报</span>';
+ if(d<=7)return '<b style="color:#f87171">'+d+' 天 · 紧急</b>';
+ if(d<=14)return '<b style="color:#fbbf24">'+d+' 天 · 尽快续期</b>';
+ if(d<=30)return '<b style="color:#60a5fa">'+d+' 天</b>';
+ return '<b style="color:#4ade80">'+d+' 天</b>';}
+async function showCert(){
+ const d=await api('/api/cert');
+ const lines=[];
+ if(d.error){lines.push(d.error);}
+ else{
+  lines.push('<b>控制面板 HTTPS 证书</b>'+(d.selfSigned?'（自签）':'（正规证书）'));
+  lines.push('域名: '+d.cn+' · 签发: '+d.issuer);
+  lines.push('到期时间: '+new Date(d.validTo).toLocaleString()+' · 剩余 '+certDaysHtml(d.days));
+  lines.push('生效时间: '+new Date(d.validFrom).toLocaleString());
+  if(d.san)lines.push('<span class="small">SAN: '+d.san+'</span>');
+  lines.push('<span class="small">证书文件: '+d.path+'</span>');
+ }
+ const nc=NODES.filter(n=>n.certDays!==null&&n.certDays!==undefined).map(n=>({name:n.name,d:n.certDays})).sort((a,b)=>a.d-b.d);
+ lines.push('<b>节点证书剩余天数（'+nc.length+'/'+NODES.length+' 台已上报）</b>');
+ if(!nc.length)lines.push('<span class="muted">暂无节点上报证书信息（agent 上报 CertDomain 后显示）</span>');
+ else nc.slice(0,15).forEach(x=>lines.push(x.name+' — '+certDaysHtml(x.d)));
+ showModal('🔐 证书到期时间',lines,'面板证书由服务器上的 acme.sh 自动续期；节点证书由各节点 agent 每 2 分钟上报（证书剩余 ≤21 天会触发告警）');
+}
 async function showAudit(){const d=await api('/api/audit');
  const aud=(d.audit||[]).map(a=>'<li><span class="muted">'+new Date(a.t).toLocaleString()+'</span> — <b>'+a.act+'</b> '+a.detail+'</li>').join('');
  const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
@@ -885,6 +909,31 @@ const handler = async (req, res) => {
   }
   if (defaultTokenBlocked()) {
     return json(res, 403, { error: '默认管理 Token 禁止使用：请编辑 cloud-data.json 将 token 与 nodeToken 改为随机强串后重启本进程（开发调试可用 ALLOW_INSECURE_TOKEN=1 临时绕过）' });
+  }
+
+  // 面板自身 HTTPS 证书信息（读 TLS_CERT，零依赖解析）
+  if (url === '/api/cert' && req.method === 'GET') {
+    if (!TLS_CERT || !fs.existsSync(TLS_CERT)) {
+      return json(res, 200, { error: '当前为 HTTP 模式（未配置 TLS_CERT），面板没有证书' });
+    }
+    try {
+      const x = new crypto.X509Certificate(fs.readFileSync(TLS_CERT));
+      // Node 的 subject/issuer 是换行分隔的 RDN 列表，逐行解析更可靠
+      const parts = (s) => String(s || '').split('\n').map(v => v.trim()).filter(Boolean);
+      const pick = (list, key) => { const l = list.find(v => v.startsWith(key + '=')); return l ? l.slice(key.length + 1) : ''; };
+      const subjL = parts(x.subject), issL = parts(x.issuer);
+      const subj = subjL.join(', '), iss = issL.join(', ');
+      const cn = pick(subjL, 'CN') || subj;
+      const issO = pick(issL, 'O') || iss;
+      const days = Math.floor((new Date(x.validTo).getTime() - Date.now()) / 86400000);
+      return json(res, 200, {
+        cn, issuer: issO, subject: subj, validFrom: x.validFrom, validTo: x.validTo,
+        days, selfSigned: subj === iss, path: TLS_CERT,
+        san: String(x.subjectAltName || '')
+      });
+    } catch (e) {
+      return json(res, 500, { error: '证书解析失败: ' + e.message });
+    }
   }
 
   if (url === '/api/nodes' && req.method === 'GET') {
