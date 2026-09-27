@@ -1084,11 +1084,39 @@ const handler = async (req, res) => {
 // ---------- TLS 可选: 设置 TLS_CERT/TLS_KEY 环境变量后以 HTTPS 监听（自签证书场景） ----------
 const TLS_CERT = process.env.TLS_CERT || '';
 const TLS_KEY = process.env.TLS_KEY || '';
+const net = require('net');
+const tls = require('tls');
 let server;
 let SCHEME = 'http';
 if (TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
   const https = require('https');
-  server = https.createServer({ cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) }, handler);
+  const cert = fs.readFileSync(TLS_CERT);
+  const key = fs.readFileSync(TLS_KEY);
+  const tlsServer = https.createServer({ cert, key }, handler);
+  const secureCtx = tls.createSecureContext({ cert, key });
+  // 同端口双协议: 首字节 0x16 = TLS 握手 → 交回 https 服务器；否则视为明文 HTTP → 301 跳到 https
+  // 这样用户误用 http:// 访问时不会再"连不上"，而是自动跳转到加密地址
+  server = net.createServer((socket) => {
+    socket.on('error', () => socket.destroy());
+    socket.once('data', (chunk) => {
+      socket.pause();
+      if (chunk[0] === 0x16) {
+        socket.unshift(chunk);
+        tlsServer.emit('connection', socket);
+        process.nextTick(() => socket.resume());
+        return;
+      }
+      const head = chunk.toString('latin1');
+      const reqLine = head.split('\r\n')[0] || '';
+      const m = reqLine.match(/^[A-Z]+\s+(\S+)/);
+      const hostHdr = (head.match(/^host:\s*([^\r\n]+)/im) || [])[1];
+      const host = (hostHdr || '').trim() || (socket.localAddress || '') + ':' + PORT;
+      const path = m ? m[1] : '/';
+      socket.end('HTTP/1.1 301 Moved Permanently\r\nLocation: https://' + host + path
+        + '\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    });
+  });
+  server.secureContext = secureCtx; // 保留引用（便于后续需要时复用）
   SCHEME = 'https';
 } else {
   if (TLS_CERT || TLS_KEY) console.log('⚠️ TLS_CERT/TLS_KEY 指向的证书文件缺失，回退为 HTTP 明文监听');
@@ -1097,6 +1125,7 @@ if (TLS_CERT && TLS_KEY && fs.existsSync(TLS_CERT) && fs.existsSync(TLS_KEY)) {
 
 server.listen(PORT, () => {
   console.log('V2bX 云控中心已启动: ' + SCHEME + '://0.0.0.0:' + PORT + (SCHEME === 'https' ? '  (TLS 已启用)' : ''));
+  if (SCHEME === 'https') console.log('提示: 用 http:// 访问同一端口会自动 301 跳转到 https://（请务必使用 https 登录）');
   if (isDefaultToken()) {
     console.log('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
     console.log('!! 检测到默认 Token：管理接口与心跳已拒绝服务(403)。   !!');
