@@ -229,7 +229,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止'):'')+'</td>'+
- '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+'</td>'+
+ '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+'</td>'+
  '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
  '<td>'+n.ip+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',n.info.version):'-')+'</td>'+
@@ -934,6 +934,9 @@ const handler = async (req, res) => {
     }
     // 指标历史入库
     pushMetrics(rec, rec.info.rss_mb, rec.info.conns);
+    // 单机多节点: 该 agent 管理的节点条目数（面板据此提示"重启影响整机"）
+    rec.nodeCount = Number(body.nodeCount) > 0 ? Number(body.nodeCount) : 1;
+    rec.nodeId = Number(body.nodeId) > 0 ? Number(body.nodeId) : null;
     // agent 版本 + 证书剩余天数
     rec.agentVer = String(body.agentVer || '');
     // 证书详情（agent v9+）: 一键查询的返回落库，并清除待查询标记
@@ -970,7 +973,15 @@ const handler = async (req, res) => {
     if (rec.pendingRename && rec.pendingRename.newName) reply.desiredName = rec.pendingRename.newName;
     // agent 自更新: 服务端设定版本与节点上报版本不一致时下发
     rec.agentVer = String(body.agentVer || '');
-    if (data.agentVersion && rec.agentVer !== String(data.agentVersion)) reply.agentUpdate = '1';
+    // 只在节点版本低于目标版本时下发自更新（避免新版被旧目标"降级"）
+    if (data.agentVersion) {
+      const tgt = Number(data.agentVersion), cur = Number(rec.agentVer);
+      if (Number.isFinite(tgt) && Number.isFinite(cur)) {
+        if (cur < tgt) reply.agentUpdate = '1';
+      } else if (String(rec.agentVer) !== String(data.agentVersion)) {
+        reply.agentUpdate = '1'; // 老 agent 不上报版本号，无法比较时按原逻辑处理
+      }
+    }
     if (pending) {
       rec.pendingAction = null; // 动作一次性下发
       if (rec.action && rec.action.status === 'queued') {
@@ -1026,10 +1037,13 @@ const handler = async (req, res) => {
       .map(([key, n]) => ({
         key, name: n.name,
         online: now - (n.lastSeen || 0) < 5 * 60 * 1000,
-        lastSeen: n.lastSeen || 0, agentVer: n.agentVer || ''
+        lastSeen: n.lastSeen || 0, agentVer: n.agentVer || '',
+        nodeId: (n.info && n.info.cfg && n.info.cfg.NodeID) || null
       }))
       .sort((a, b) => (b.online - a.online) || (b.lastSeen - a.lastSeen)); // 在线优先，其次最近心跳
-    return json(res, 200, { ip, nodes: list, recommend: list.length ? list[0].name : '' });
+    // 推荐身份: 跳过异常记录（历史遗留的 unknown 空报文记录），避免把节点身份带偏
+    const good = list.filter((n) => n.name && n.name !== 'unknown');
+    return json(res, 200, { ip, nodes: list, recommend: good.length ? good[0].name : '' });
   }
 
   // ---------- 节点长轮询：挂起连接等待任务，管理端下发命令时立即唤醒（秒级送达） ----------
@@ -1118,7 +1132,8 @@ const handler = async (req, res) => {
       agentVer: n.agentVer || '',
       renaming: n.pendingRename ? n.pendingRename.newName : null,
       desired: n.desired || null, action: effAction(n),
-      cert: n.cert || null, certQuery: n.certQuery || null
+      cert: n.cert || null, certQuery: n.certQuery || null,
+      nodeCount: n.nodeCount || 1, nodeId: n.nodeId || null
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, {
       token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion,
