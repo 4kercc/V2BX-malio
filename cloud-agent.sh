@@ -9,7 +9,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="6"
+AGENT_VER="7"
 
 [[ -f "$CONF" ]] || exit 0
 source "$CONF"
@@ -69,6 +69,16 @@ CUR_HOST=$(get_str ApiHost)
 CUR_KEY=$(get_str ApiKey)
 CUR_ID=$(get_int NodeID)
 CUR_DOMAIN=$(get_str CertDomain)
+CUR_NAME=$(get_str Name)
+
+############################################
+# 节点重命名: 服务端下发 desiredName → 迁移本地 key（保持身份键稳定）
+############################################
+APPLY_RENAME_MARKER="/tmp/.v2bx-cloud-rename-applied"
+PENDING_RENAME_FILE="/etc/V2bX/.cloud_pending_rename"
+# 心跳成功后由服务端确认前：本机上一次已应用的改名（一次性上报 ack 用）
+APPLIED_RENAME=""
+[[ -f "$APPLY_RENAME_MARKER" ]] && APPLIED_RENAME=$(head -1 "$APPLY_RENAME_MARKER" 2>/dev/null)
 
 ############################################
 # 上报心跳并拉取期望配置
@@ -93,7 +103,8 @@ PAYLOAD=$(cat <<EOF
   "ack": "${ACK}",
   "agentVer": "${AGENT_VER}",
   "certDays": ${CERT_DAYS:-null},
-  "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}"}
+  "appliedRename": "${APPLIED_RENAME}",
+  "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}","Name":"${CUR_NAME}"}
 }
 EOF
 )
@@ -176,6 +187,31 @@ if [[ "$CHANGED" == "1" ]]; then
     cp -f "$CONFIG_JSON.bak.cloud" "$CONFIG_JSON"
     CHANGED=0
     log "config.json 校验失败，已回滚到修改前备份"
+  fi
+fi
+
+############################################
+# 节点重命名: 服务端 pendingRename 下发 desiredName → 迁移身份键
+# 流程: 改 cloud.conf NODE_NAME(云控身份键) + config.json Name(面板显示名)
+#      → 写确认标记 → 下次心跳用新名上报，服务端凭 appliedRename 迁移数据
+############################################
+WANT_NAME=$(echo "$RESP" | jq -r ".desiredName // empty" 2>/dev/null)
+if [[ -n "$WANT_NAME" && "$WANT_NAME" != "null" && "$WANT_NAME" != "$NODE_NAME" ]]; then
+  if [[ "$WANT_NAME" =~ [|] || ${#WANT_NAME} -gt 64 ]]; then
+    log "rename: 非法名称(含 | 或超长)，跳过: $WANT_NAME"
+  else
+    OLD_CLOUD_NAME="$NODE_NAME"
+    sed -i "s/^NODE_NAME=\".*/NODE_NAME=\"${WANT_NAME}\"/" /etc/V2bX/cloud.conf 2>/dev/null || true
+    NODE_NAME="$WANT_NAME"
+    if grep -q '"Name"' "$CONFIG_JSON" 2>/dev/null; then
+      sed -i -E "s/(\"Name\"\s*:\s*\")[^\"]*(\")/\1${WANT_NAME}\2/" "$CONFIG_JSON"
+    fi
+    echo "rename:${OLD_CLOUD_NAME}" > "$APPLY_RENAME_MARKER"
+    log "rename: ${OLD_CLOUD_NAME} -> ${WANT_NAME} (已应用，等下次心跳确认迁移)"
+    if [[ "$CHANGED" == "1" ]]; then
+      systemctl restart V2bX && log "rename 轮次附带配置变更，已重启 V2bX"
+    fi
+    exit 0
   fi
 fi
 

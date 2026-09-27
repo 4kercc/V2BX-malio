@@ -195,6 +195,9 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <select id="groupFilter" onchange="render()" style="width:auto;min-width:140px">
    <option value="">全部分组</option>
   </select>
+  <select id="hostFilter" onchange="render()" style="width:auto;min-width:180px">
+   <option value="">全部面板域名</option>
+  </select>
   <button class="btn btn-ghost btn-sm" onclick="showAudit()">📜 审计 / 事件日志</button>
  </div>
  <div class="tbwrap">
@@ -243,7 +246,8 @@ function fmtCert(d){if(d===null||d===undefined)return badge('b-mut','-');
  if(d<=21)return badge('b-info',d+'天');
  return badge('b-ok',d+'天');}
 function visibleNodes(){const gf=document.getElementById('groupFilter').value;
- return NODES.filter(n=>!gf||n.group===gf);}
+ const hf=document.getElementById('hostFilter').value;
+ return NODES.filter(n=>(!gf||n.group===gf)&&(!hf||((n.info.cfg&&n.info.cfg.ApiHost)||'')===hf));}
 function render(){const keepSel=new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)));
  const list=visibleNodes();
  const online=NODES.filter(n=>n.online).length;
@@ -253,10 +257,14 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  const gf=document.getElementById('groupFilter');const cur=gf.value;
  const groups=[...new Set(NODES.map(n=>n.group).filter(Boolean))].sort();
  if(gf.dataset.sig!==groups.join('|')){gf.dataset.sig=groups.join('|');gf.innerHTML='<option value="">全部分组</option>'+groups.map(g=>'<option value="'+g+'">'+g+'</option>').join('');gf.value=groups.includes(cur)?cur:'';}
+ // 面板域名下拉选项
+ const hf=document.getElementById('hostFilter');const curH=hf.value;
+ const hosts=[...new Set(NODES.map(n=>(n.info.cfg&&n.info.cfg.ApiHost)||'').filter(Boolean))].sort();
+ if(hf.dataset.sig!==hosts.join('|')){hf.dataset.sig=hosts.join('|');hf.innerHTML='<option value="">全部面板域名</option>'+hosts.map(h=>'<option value="'+h+'">'+h+'</option>').join('');hf.value=hosts.includes(curH)?curH:'';}
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'</td>'+
- '<td style="font-weight:500"><a href="#" onclick="showNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'));return false" style="color:hsl(var(--info));text-decoration:none">'+n.name+'</a></td>'+
+ '<td style="font-weight:500">'+(n.renaming?'<span title="重命名中 → '+n.renaming+'" style="opacity:.6">'+n.name+'</span> '+badge('b-info','✏ → '+n.renaming):'<a href="#" onclick="showNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'));return false" ondblclick="renameNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'),\''+n.name.replace(/'/g,"\\'")+'\');return false" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>')+'</td>'+
  '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
  '<td>'+n.ip+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',n.info.version):'-')+'</td>'+
@@ -270,7 +278,9 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
  '<div class="nrow"><div style="display:flex;align-items:center;gap:8px">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<b>'+n.name+'</b>'+(n.group?' '+badge('b-mut',n.group):'')+'</div>'+fmtAct(n.action)+'</div>'+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<b>'+n.name+'</b>'+(n.group?' '+badge('b-mut',n.group):'')+
+ (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+
+ '<button class="btn btn-ghost btn-sm" onclick="renameNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'),\''+n.name.replace(/'/g,"\\'")+'\')">✏</button></div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
@@ -303,6 +313,12 @@ function sparkline(series,color){if(!series||series.length<2)return '<div class=
  const pts=series.map((s,i)=>(p+i*(w-2*p)/(series.length-1)).toFixed(1)+','+(h-p-((s.v-min)/(max-min||1))*(h-2*p)).toFixed(1)).join(' ');
  return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:'+h+'px;background:hsl(var(--muted));border-radius:6px">'+
  '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="2"/></svg>';}
+function renameNode(keyEnc,cur){const key=decodeURIComponent(keyEnc);
+ const nn=prompt('将节点重命名为（1-64 字符，不能含 | 或路径分隔符）:\n重命名会迁移全部历史数据（指标/事件/动作），约 2 分钟生效:',cur);
+ if(!nn||nn===cur)return;
+ api('/api/rename',{key,newName:nn.trim()}).then(d=>{
+  if(d.error){show('被拒绝: '+d.error);return;}
+  show('✓ 重命名已下发: '+cur+' → '+d.newName+'（等节点心跳应用，≤2 分钟）');});}
 async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  const d=await api('/api/node_detail?key='+encodeURIComponent(key));
  if(d.error){show('加载失败: '+d.error);return;}
@@ -575,7 +591,19 @@ const handler = async (req, res) => {
     const body = await readBody(req);
     const name = String(body.name || 'unknown').slice(0, 64);
     const key = name + '|' + ip;
-    const rec = data.nodes[key] || { created: Date.now(), desired: null, pendingAction: null };
+    let rec = data.nodes[key];
+    if (!rec) {
+      // 重命名迁移: 心跳带了新名但无记录 → 查找 pendingRename 匹配的旧记录（同 IP + 新名匹配）
+      // 迁移保留全部历史: 指标/事件/动作/期望配置/分组/证书天数/创建时间
+      for (const [ok, old] of Object.entries(data.nodes)) {
+        if (old.pendingRename && old.pendingRename.newName === name && old.ip === ip) {
+          rec = old;
+          delete data.nodes[ok];
+          break;
+        }
+      }
+    }
+    if (!rec) rec = { created: Date.now(), desired: null, pendingAction: null };
     const prevSeen = rec.lastSeen || 0; // 真正的上一次心跳时间（必须在更新 lastSeen 之前捕获）
     rec.name = name;
     rec.ip = ip;
@@ -615,6 +643,8 @@ const handler = async (req, res) => {
     const pending = rec.pendingAction;
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     if (pending === 'update') reply.version = data.updateVersion || '';
+    // 重命名下发: pendingRename 携带新名，agent 应用后以 appliedRename 确认
+    if (rec.pendingRename && rec.pendingRename.newName) reply.desiredName = rec.pendingRename.newName;
     // agent 自更新: 服务端设定版本与节点上报版本不一致时下发
     rec.agentVer = String(body.agentVer || '');
     if (data.agentVersion && rec.agentVer !== String(data.agentVersion)) reply.agentUpdate = '1';
@@ -646,6 +676,13 @@ const handler = async (req, res) => {
         rec.action.inferred = true; // 无 ack，由服务端推断
         rec.action.completedAt = Date.now();
       }
+    }
+    // 重命名确认: agent 上报 appliedRename（rename:旧名）→ 迁移生效，清除 pendingRename
+    if (body.appliedRename && String(body.appliedRename).startsWith('rename:') && rec.pendingRename) {
+      const oldName = String(body.appliedRename).slice(7);
+      audit('rename-applied', '节点重命名生效: ' + oldName + ' → ' + name);
+      addEvent(rec.name, 'rename', '节点重命名: ' + oldName + ' → ' + name);
+      rec.pendingRename = null;
     }
     data.nodes[key] = rec;
     saveData(data);
@@ -688,6 +725,7 @@ const handler = async (req, res) => {
       online: now - n.lastSeen < 5 * 60 * 1000, info: n.info,
       group: n.group || '', certDays: (n.certDays === undefined ? null : n.certDays),
       agentVer: n.agentVer || '',
+      renaming: n.pendingRename ? n.pendingRename.newName : null,
       desired: n.desired || null, action: effAction(n)
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, {
@@ -724,6 +762,26 @@ const handler = async (req, res) => {
     audit('group', '设置分组 [' + (g || '无') + '] 到 ' + count + ' 台节点');
     saveData(data);
     return json(res, 200, { ok: true, applied: count, group: g });
+  }
+
+  if (url === '/api/rename' && req.method === 'POST') {
+    const body = await readBody(req);
+    const key = String(body.key || '');
+    const newName = String(body.newName || '').trim();
+    const n = data.nodes[key];
+    if (!n) return json(res, 404, { error: '节点不存在' });
+    if (!newName || newName.length > 64) return json(res, 400, { error: '名称长度需为 1-64 字符' });
+    if (/[|]/.test(newName)) return json(res, 400, { error: '名称不能包含 | 字符' });
+    if (/[\/\\]/.test(newName)) return json(res, 400, { error: '名称不能包含路径分隔符' });
+    if (newName === n.name) return json(res, 400, { error: '名称未变化' });
+    const newKey = newName + '|' + n.ip;
+    if (data.nodes[newKey]) return json(res, 400, { error: '该名称已被同 IP 节点使用' });
+    // 身份键迁移: 心跳键是 name|ip，直接改名会分裂记录 —— 走 pendingRename 流程
+    // agent 收到 desiredName 应用后，下次心跳以新名上报，服务端凭 appliedRename 迁移全部历史
+    n.pendingRename = { oldKey: key, newName, requestedAt: Date.now() };
+    audit('rename', '节点重命名: ' + n.name + ' → ' + newName + '（等 agent 应用）');
+    saveData(data);
+    return json(res, 200, { ok: true, newName });
   }
 
   if (url === '/api/desired' && req.method === 'POST') {
