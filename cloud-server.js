@@ -700,6 +700,39 @@ function defaultTokenBlocked() {
   return isDefaultToken() && !ALLOW_INSECURE;
 }
 
+// 长轮询等待表: 节点身份键 -> { res, timer }（下发命令时立即唤醒，无需等下一轮心跳）
+const WAITERS = new Map();
+const WAIT_MS = 50000; // 单次挂起上限；节点侧 curl --max-time 58s，超时后自动重挂
+function waitForNode(key, res) {
+  const prev = WAITERS.get(key); // 同一节点重复挂起（进程重启等）时先收掉旧连接
+  if (prev) {
+    clearTimeout(prev.timer);
+    WAITERS.delete(key);
+    try { json(prev.res, 200, { wake: 0 }); } catch (e) { /* 连接已断 */ }
+  }
+  const timer = setTimeout(() => {
+    const w = WAITERS.get(key);
+    if (w && w.res === res) WAITERS.delete(key);
+    try { json(res, 200, { wake: 0, idle: 1 }); } catch (e) { /* 连接已断 */ }
+  }, WAIT_MS);
+  WAITERS.set(key, { res, timer });
+  res.on('close', () => {
+    const w = WAITERS.get(key);
+    if (w && w.res === res) { clearTimeout(w.timer); WAITERS.delete(key); }
+  });
+}
+function flushNode(key) {
+  const w = WAITERS.get(key);
+  if (!w) return;
+  clearTimeout(w.timer);
+  WAITERS.delete(key);
+  try { json(w.res, 200, { wake: 1 }); } catch (e) { /* 连接已断 */ }
+}
+function flushWaiters(keys) { // keys 省略 = 全部唤醒（用于全局设置变更）
+  if (!keys) { for (const k of [...WAITERS.keys()]) flushNode(k); return; }
+  for (const k of keys) flushNode(k);
+}
+
 // IP 级限速：滑动窗口计数（零依赖内存实现）
 const rateBuckets = new Map(); // key -> {count, resetAt}
 function rateLimit(key, max, windowMs) {
@@ -902,7 +935,25 @@ const handler = async (req, res) => {
     return json(res, 200, reply);
   }
 
-  // ---------- 管理接口（会话 Cookie 或脚本用 X-Token；失败限速 + 默认 Token 门禁） ----------
+  // ---------- 节点长轮询：挂起连接等待任务，管理端下发命令时立即唤醒（秒级送达） ----------
+  // 只做「有没有活」的判断，不改任何节点记录；被唤醒后节点会立刻跑一轮完整心跳来领取任务
+  if (url === '/api/wait' && req.method === 'POST') {
+    if (!rateLimit('hb:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
+      rateLimit('fail:' + ip, 10, 60000);
+      return json(res, 401, { error: 'bad token' });
+    }
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用，请在服务端 cloud-data.json 修改 nodeToken 后重启' });
+    const body = await readBody(req);
+    const key = String(body.name || 'unknown').slice(0, 64) + '|' + ip;
+    const rec = data.nodes[key];
+    const hasWork = !!(rec && (rec.desired || rec.pendingAction || (rec.pendingRename && rec.pendingRename.newName)));
+    const hasAgentUpdate = !!(data.agentVersion && rec && String(rec.agentVer || '') !== String(data.agentVersion));
+    if (hasWork || hasAgentUpdate) return json(res, 200, { wake: 1 });
+    return waitForNode(key, res);
+  }
+
+
   if (!isAuthed(req)) {
     if (!rateLimit('fail:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
     return json(res, 401, { error: 'unauthorized' });
@@ -1017,6 +1068,7 @@ const handler = async (req, res) => {
     n.pendingRename = { oldKey: key, newName, requestedAt: Date.now() };
     audit('rename', '节点重命名: ' + n.name + ' → ' + newName + '（等 agent 应用）');
     saveData(data);
+    flushNode(key); // 立即唤醒该节点的长轮询，秒级应用
     return json(res, 200, { ok: true, newName });
   }
 
@@ -1032,25 +1084,30 @@ const handler = async (req, res) => {
       }
     }
     let count = 0;
+    const hit = [];
     for (const [key, n] of Object.entries(data.nodes)) {
       if (body.targets === 'all' || (body.targets || []).includes(key)) {
         n.desired = Object.assign({}, n.desired || {}, fields);
+        hit.push(key);
         count++;
       }
     }
     audit('desired', '下发配置 ' + JSON.stringify(fields) + ' 到 ' + count + ' 台节点');
     saveData(data);
+    flushWaiters(hit); // 立即唤醒目标节点的长轮询
     return json(res, 200, { ok: true, applied: count, fields });
   }
 
   if (url === '/api/desired/clear' && req.method === 'POST') {
     const body = await readBody(req);
     let count = 0;
+    const hit = [];
     for (const [key, n] of Object.entries(data.nodes)) {
-      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.desired = null; count++; }
+      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.desired = null; hit.push(key); count++; }
     }
     audit('desired-clear', '清除 ' + count + ' 台节点的期望配置');
     saveData(data);
+    flushWaiters(hit);
     return json(res, 200, { ok: true, cleared: count });
   }
 
@@ -1058,6 +1115,7 @@ const handler = async (req, res) => {
     const body = await readBody(req);
     const act = body.action === 'update' ? 'update' : 'restart';
     let count = 0;
+    const hit = [];
     for (const [key, n] of Object.entries(data.nodes)) {
       if (body.targets === 'all' || (body.targets || []).includes(key)) {
         n.pendingAction = act;
@@ -1067,11 +1125,13 @@ const handler = async (req, res) => {
           queuedAt: Date.now(),
           status: 'queued'
         };
+        hit.push(key);
         count++;
       }
     }
     audit('action', '排队动作 [' + act + (act === 'update' && data.updateVersion ? ' ' + data.updateVersion : '') + '] 到 ' + count + ' 台节点');
     saveData(data);
+    flushWaiters(hit); // 立即唤醒目标节点，命令秒级送达
     return json(res, 200, { ok: true, queued: count, action: act, version: act === 'update' ? (data.updateVersion || '') : undefined });
   }
 
@@ -1096,6 +1156,7 @@ const handler = async (req, res) => {
     }
     audit('settings', changes.join('; ') || '无变更');
     saveData(data);
+    flushWaiters(); // 设置可能影响所有节点（版本锁定/agent 自更新），全部唤醒重取
     return json(res, 200, { ok: true, nodeToken: data.nodeToken, updateVersion: data.updateVersion, agentVersion: data.agentVersion });
   }
 

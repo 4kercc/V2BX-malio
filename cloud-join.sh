@@ -93,8 +93,37 @@ curl -fsSL -o /usr/local/V2bX/cloud-agent.sh \
     echo -e "${red}agent 下载失败，请检查网络${plain}"; exit 1; }
 chmod +x /usr/local/V2bX/cloud-agent.sh
 
-# 幂等注册 cron（重复执行不会叠加）
+# 常驻守护（长轮询）: 命令下发秒级送达，替代「等下一次 cron」的 2 分钟延迟
+curl -fsSL -o /usr/local/V2bX/cloud-agent-daemon.sh \
+    https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent-daemon.sh || true
+chmod +x /usr/local/V2bX/cloud-agent-daemon.sh 2>/dev/null
+
+# 幂等注册 cron（兜底：守护进程异常/被停时仍能上报；agent 自带 flock 不会并发）
 (crontab -l 2>/dev/null | grep -v "cloud-agent.sh"; echo "*/2 * * * * /usr/local/V2bX/cloud-agent.sh >/dev/null 2>&1") | crontab -
+
+if [[ -f /usr/local/V2bX/cloud-agent-daemon.sh ]] && command -v systemctl >/dev/null; then
+  cat > /etc/systemd/system/v2bx-cloud-agent.service <<'EOF'
+[Unit]
+Description=V2bX Cloud Agent (long-poll, instant command delivery)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash /usr/local/V2bX/cloud-agent-daemon.sh
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload >/dev/null 2>&1
+  systemctl enable --now v2bx-cloud-agent >/dev/null 2>&1 || systemctl restart v2bx-cloud-agent >/dev/null 2>&1
+  echo -e "${green}✓ 长轮询守护已安装 (v2bx-cloud-agent)，命令下发秒级生效${plain}"
+else
+  echo -e "${yellow}提示: 未安装 systemd 守护，命令下发仍走 cron（最长 2 分钟）${plain}"
+fi
 
 ############################################
 # 立即执行一次 agent 完成首心跳，当场验证
