@@ -122,6 +122,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
    <button class="btn btn-ghost btn-sm" onclick="refresh()">↻ 刷新</button>
    <button class="btn btn-outline btn-sm" id="autoBtn" onclick="toggleAuto()">自动刷新: 开</button>
    <button class="btn btn-ghost btn-sm" id="themeBtn" onclick="toggleTheme()">🌙</button>
+   <button class="btn btn-ghost btn-sm" onclick="logout()" title="退出登录">退出</button>
  </div>
 </div>
 
@@ -215,24 +216,20 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
 </div>
 
 <script>
-(function(){try{var qs=new URLSearchParams(location.search).get('token');if(qs)localStorage.setItem('cloudToken',qs);}catch(e){}})();
 function applyTheme(t){document.documentElement.classList.toggle('dark',t==='dark');
  var b=document.getElementById('themeBtn');if(b)b.textContent=t==='dark'?'🌙':'☀️';}
 function toggleTheme(){var t=document.documentElement.classList.contains('dark')?'light':'dark';
  localStorage.setItem('cloudTheme',t);applyTheme(t);}
 applyTheme(localStorage.getItem('cloudTheme')||'dark');
 
-let T=localStorage.getItem('cloudToken')||'';
 let NODES=[];
-let tokenAsked=false;
-function askToken(msg){if(tokenAsked)return;tokenAsked=true;
- uiPrompt(msg||'请输入管理 Token（服务端 cloud-data.json 里的 token 字段）','',function(v){
-  tokenAsked=false;v=(v||'').trim();if(!v)return;T=v;localStorage.setItem('cloudToken',v);refresh();});}
-async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+// 会话由服务端 Cookie 维护，前端不再持有/传递任何 Token
+async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,credentials:'same-origin'});
  const j=await r.json().catch(()=>({}));
- if(r.status===401){if(T){T='';localStorage.removeItem('cloudToken');show('Token 错误，请重新输入');}askToken();return j;}
+ if(r.status===401){location.href='/login';return j;} // 会话失效 → 回登录页
  if(r.status===403){document.getElementById('msg').textContent=j.error||'被拒绝';}
  return j;}
+function logout(){fetch('/api/logout',{method:'POST',credentials:'same-origin'}).catch(function(){}).then(function(){location.href='/login';});}
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
 function badge(cls,txt){return '<span class="badge '+cls+'">'+txt+'</span>';}
 function fmtAct(a){if(!a)return badge('b-mut','-');
@@ -438,6 +435,114 @@ function toggleAll(cb){document.querySelectorAll('.sel').forEach(function(x){x.c
 </body>
 </html>`;
 
+// ---------- 独立登录页（未认证时唯一可见的页面，不泄露任何配置/节点信息） ----------
+const LOGIN = `<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>登录 · V2bX 云控中心</title>
+<style>
+:root{--bg:222 47% 6%;--card:222 40% 10%;--border:217 33% 20%;--fg:210 40% 96%;--muted:215 20% 55%;--primary:217 91% 60%;--radius:10px}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
+ background:hsl(var(--bg));color:hsl(var(--fg));
+ font-family:system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+.box{width:100%;max-width:360px;background:hsl(var(--card));border:1px solid hsl(var(--border));
+ border-radius:var(--radius);padding:26px 22px;box-shadow:0 10px 40px rgba(0,0,0,.45)}
+h1{margin:0 0 4px;font-size:17px;font-weight:600;text-align:center}
+p.sub{margin:0 0 18px;font-size:12px;color:hsl(var(--muted));text-align:center}
+label{display:block;font-size:12px;color:hsl(var(--muted));margin-bottom:6px}
+input{width:100%;height:38px;padding:0 10px;border-radius:8px;background:transparent;color:inherit;
+ border:1px solid hsl(var(--border));font-size:14px;outline:none}
+input:focus{border-color:hsl(var(--primary))}
+button{width:100%;height:38px;margin-top:14px;border:0;border-radius:8px;cursor:pointer;
+ background:hsl(var(--primary));color:#fff;font-size:14px;font-weight:500}
+button:disabled{opacity:.6;cursor:default}
+#err{min-height:16px;margin-top:10px;font-size:12px;color:#f87171;text-align:center}
+</style>
+</head>
+<body>
+<form class="box" id="f" autocomplete="off">
+ <h1>V2bX 云控中心</h1>
+ <p class="sub">请输入管理 Token 登录</p>
+ <label for="t">管理 Token</label>
+ <input id="t" type="password" autocomplete="current-password" autofocus>
+ <button id="b" type="submit">登 录</button>
+ <div id="err"></div>
+</form>
+<script>
+document.getElementById('f').addEventListener('submit',function(e){
+ e.preventDefault();
+ var b=document.getElementById('b'),err=document.getElementById('err'),v=document.getElementById('t').value;
+ if(!v){err.textContent='请输入 Token';return;}
+ b.disabled=true;err.textContent='';
+ fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify({token:v})})
+  .then(function(r){return r.json().catch(function(){return{};}).then(function(j){return{ok:r.ok,status:r.status,j:j};});})
+  .then(function(res){
+    if(res.ok){location.href='/';return;}
+    err.textContent=(res.j&&res.j.error)||('登录失败 ('+res.status+')');
+    b.disabled=false;document.getElementById('t').select();
+  })
+  .catch(function(){err.textContent='网络错误，请重试';b.disabled=false;});
+});
+</script>
+</body>
+</html>`;
+
+// ---------- 会话（服务端 Cookie，HttpOnly；管理端 API 支持会话或 X-Token 两种凭证） ----------
+const SESSIONS = new Map(); // sid -> { exp }
+const SESSION_TTL = 12 * 3600 * 1000;
+const SESSION_COOKIE = 'v2bx_sess';
+function parseCookie(req, name) {
+  const raw = req.headers.cookie || '';
+  for (const part of raw.split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+function newSession() {
+  const sid = crypto.randomBytes(32).toString('hex');
+  SESSIONS.set(sid, { exp: Date.now() + SESSION_TTL });
+  if (SESSIONS.size > 50) SESSIONS.delete(SESSIONS.keys().next().value); // 上限保护，淘汰最旧
+  return sid;
+}
+function getSession(req) {
+  const sid = parseCookie(req, SESSION_COOKIE);
+  if (!sid) return null;
+  const s = SESSIONS.get(sid);
+  if (!s) return null;
+  if (s.exp < Date.now()) { SESSIONS.delete(sid); return null; }
+  s.exp = Date.now() + SESSION_TTL; // 滑动续期
+  return sid;
+}
+function setSessionCookie(res, sid) {
+  const secure = SCHEME === 'https' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', SESSION_COOKIE + '=' + sid + '; Path=/; HttpOnly; SameSite=Strict; Max-Age=' + Math.floor(SESSION_TTL / 1000) + secure);
+}
+function clearSessionCookie(res) {
+  const secure = SCHEME === 'https' ? '; Secure' : '';
+  res.setHeader('Set-Cookie', SESSION_COOKIE + '=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' + secure);
+}
+// 管理端凭证：有效会话 Cookie，或脚本用的 X-Token 头
+function isAuthed(req) {
+  if (getSession(req)) return true;
+  const t = req.headers['x-token'];
+  return t ? safeEqual(t, data.token) : false;
+}
+// HTML 响应统一安全头：禁止被嵌套、禁嗅探、不泄露来源
+function sendHtml(res, code, html) {
+  res.writeHead(code, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer'
+  });
+  res.end(html);
+}
 
 // ---------- 数据存储（含 v1 → v2 迁移） ----------
 function loadData() {
@@ -558,6 +663,9 @@ setInterval(() => {
     }
   }
   if (changed) saveData(data);
+  // 会话过期清理（避免内存里堆积失效会话）
+  const t = Date.now();
+  for (const [sid, s] of SESSIONS) if (s.exp < t) SESSIONS.delete(sid);
 }, 60 * 1000);
 
 // ---------- 安全工具 ----------
@@ -617,8 +725,41 @@ const handler = async (req, res) => {
   const url = req.url.split('?')[0];
   const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
 
-  // Web 后台
-  if (url === '/' || url === '/ui') { send(res, 200, UI, 'text/html; charset=utf-8'); return; }
+  // ---------- 登录页 / 后台页面（服务端会话鉴权：未登录时只返回登录页，不输出任何面板内容） ----------
+  if (url === '/login') {
+    if (isAuthed(req)) { res.writeHead(302, { Location: '/' }); res.end(); return; }
+    return sendHtml(res, 200, LOGIN);
+  }
+  if (url === '/favicon.ico') { res.writeHead(204); res.end(); return; }
+  if (url === '/' || url === '/ui') {
+    // 便捷入口: /?token=xxx 校验通过 → 写入会话 Cookie 并跳转到干净 URL（Token 不留在地址栏与历史记录里）
+    const qToken = new URLSearchParams(req.url.split('?')[1] || '').get('token');
+    if (qToken) {
+      if (!defaultTokenBlocked() && safeEqual(qToken, data.token)) {
+        setSessionCookie(res, newSession());
+        res.writeHead(302, { Location: '/' }); res.end(); return;
+      }
+      res.writeHead(302, { Location: '/login' }); res.end(); return;
+    }
+    if (!isAuthed(req)) { res.writeHead(302, { Location: '/login' }); res.end(); return; }
+    return sendHtml(res, 200, UI);
+  }
+  // 登录 / 登出（登录失败按 IP 限速，错误信息不区分「Token 不存在」与「Token 错误」）
+  if (url === '/api/login' && req.method === 'POST') {
+    if (!rateLimit('login:' + ip, 10, 60000)) return json(res, 429, { error: '尝试过于频繁，请稍后再试' });
+    const body = await readBody(req);
+    const t = String(body.token || '');
+    if (!t || !safeEqual(t, data.token)) return json(res, 401, { error: 'Token 错误' });
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认管理 Token 禁止登录：请在服务端修改 cloud-data.json 的 token 后重启' });
+    setSessionCookie(res, newSession());
+    return json(res, 200, { ok: true });
+  }
+  if (url === '/api/logout' && req.method === 'POST') {
+    const sid = getSession(req);
+    if (sid) SESSIONS.delete(sid);
+    clearSessionCookie(res);
+    return json(res, 200, { ok: true });
+  }
 
   // ---------- 节点心跳（节点专用 nodeToken + 限速） ----------
   if (url === '/api/heartbeat' && req.method === 'POST') {
@@ -743,15 +884,13 @@ const handler = async (req, res) => {
     return json(res, 200, reply);
   }
 
-  // ---------- 管理接口（管理 Token + 失败限速 + 默认 Token 门禁） ----------
-  if (url !== '/api/token') {
-    if (!safeEqual(req.headers['x-token'], data.token)) {
-      if (!rateLimit('fail:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
-      return json(res, 401, { error: 'unauthorized' });
-    }
-    if (defaultTokenBlocked()) {
-      return json(res, 403, { error: '默认管理 Token 禁止使用：请编辑 cloud-data.json 将 token 与 nodeToken 改为随机强串后重启本进程（开发调试可用 ALLOW_INSECURE_TOKEN=1 临时绕过）' });
-    }
+  // ---------- 管理接口（会话 Cookie 或脚本用 X-Token；失败限速 + 默认 Token 门禁） ----------
+  if (!isAuthed(req)) {
+    if (!rateLimit('fail:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    return json(res, 401, { error: 'unauthorized' });
+  }
+  if (defaultTokenBlocked()) {
+    return json(res, 403, { error: '默认管理 Token 禁止使用：请编辑 cloud-data.json 将 token 与 nodeToken 改为随机强串后重启本进程（开发调试可用 ALLOW_INSECURE_TOKEN=1 临时绕过）' });
   }
 
   if (url === '/api/nodes' && req.method === 'GET') {
@@ -926,17 +1065,19 @@ const handler = async (req, res) => {
   json(res, 404, { error: 'not found' });
 };
 
-// ---------- 启动自检: UI 内联脚本必须能被浏览器解析 ----------
+// ---------- 启动自检: 内联脚本必须能被浏览器解析 ----------
 // 模板字面量里的 \n 等转义会被 Node 提前消化，可能在页面字符串里留下裸换行，
-// 导致整段 UI JS 变成 SyntaxError（表现为"函数全部未定义"）。此处直接解析一次，坏了一律拒绝启动。
-(function selfCheckUI() {
-  const m = UI.match(/<script>([\s\S]*?)<\/script>/);
-  if (!m) { console.error('!! UI 自检失败: 未找到内联 <script> 块'); process.exit(1); }
-  try {
-    new Function(m[1]);
-  } catch (e) {
-    console.error('!! UI 内联脚本语法错误，拒绝启动: ' + e.message);
-    process.exit(1);
+// 导致整段内联 JS 变成 SyntaxError（表现为"函数全部未定义"）。此处逐个解析，坏了一律拒绝启动。
+(function selfCheckInlineScripts() {
+  for (const [name, html] of [['UI', UI], ['LOGIN', LOGIN]]) {
+    const m = html.match(/<script>([\s\S]*?)<\/script>/);
+    if (!m) { console.error('!! ' + name + ' 自检失败: 未找到内联 <script> 块'); process.exit(1); }
+    try {
+      new Function(m[1]);
+    } catch (e) {
+      console.error('!! ' + name + ' 内联脚本语法错误，拒绝启动: ' + e.message);
+      process.exit(1);
+    }
   }
 })();
 
