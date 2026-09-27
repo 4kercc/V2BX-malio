@@ -86,6 +86,9 @@ input::placeholder{color:hsl(var(--muted-fg))}
 .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .head-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .tbwrap{overflow-x:auto;border:1px solid hsl(var(--border));border-radius:var(--radius)}
+th.sortable{cursor:pointer;user-select:none}
+th.sortable:hover{color:hsl(var(--foreground))}
+th.sortable .si{font-size:9px;opacity:.8;margin-left:2px}
 table{width:100%;border-collapse:collapse;font-size:13px;min-width:1040px}
 th{background:hsl(var(--muted));color:hsl(var(--muted-fg));font-weight:500;text-align:left;padding:9px 10px;white-space:nowrap}
 td{padding:10px;border-top:1px solid hsl(var(--border));vertical-align:top}
@@ -166,9 +169,9 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-ghost btn-sm" onclick="showAudit()">📜 审计 / 事件日志</button>
  </div>
  <div class="tbwrap">
-  <table><thead><tr>
+  <table><thead id="tbhead"><tr>
    <th style="width:32px"><input type="checkbox" id="selAll" onchange="toggleAll(this)" style="width:14px;height:14px;padding:0"></th>
-   <th>状态</th><th>名称</th><th>分组</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>证书</th><th>面板 / 节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
+   <th class="sortable" data-col="online" onclick="toggleSort('online')">状态<span class="si"></span></th><th class="sortable" data-col="name" onclick="toggleSort('name')">名称<span class="si"></span></th><th class="sortable" data-col="group" onclick="toggleSort('group')">分组<span class="si"></span></th><th class="sortable" data-col="ip" onclick="toggleSort('ip')">IP<span class="si"></span></th><th class="sortable" data-col="ver" onclick="toggleSort('ver')">版本<span class="si"></span></th><th class="sortable" data-col="rss" onclick="toggleSort('rss')">内存<span class="si"></span></th><th class="sortable" data-col="conns" onclick="toggleSort('conns')">连接<span class="si"></span></th><th>WARP</th><th class="sortable" data-col="cert" onclick="toggleSort('cert')">证书<span class="si"></span></th><th class="sortable" data-col="panel" onclick="toggleSort('panel')" title="点击排序: 面板域名 → 节点ID">面板 / 节点ID<span class="si"></span></th><th class="sortable" data-col="seen" onclick="toggleSort('seen')">最后心跳<span class="si"></span></th><th>待下发</th><th>最近动作</th>
   </tr></thead><tbody id="tb"></tbody></table>
  </div>
  <div class="only-mobile" id="mc"></div>
@@ -213,8 +216,38 @@ function fmtCert(d){if(d===null||d===undefined)return badge('b-mut','-');
 function visibleNodes(){const gf=document.getElementById('groupFilter').value;
  const hf=document.getElementById('hostFilter').value;
  return NODES.filter(n=>(!gf||n.group===gf)&&(!hf||((n.info.cfg&&n.info.cfg.ApiHost)||'')===hf));}
+// 面板域名 → 固定颜色（按域名哈希），让不同来源一眼可分
+function panelTag(n){const h=(n.info&&n.info.cfg&&n.info.cfg.ApiHost)||'';
+ if(!h)return '<span class="muted">未接入</span>';
+ const s=h.replace(/^https?:[/][/]/,'').replace(/[/]+$/,'');
+ let hue=0;for(let i=0;i<s.length;i++)hue=(hue*31+s.charCodeAt(i))%360;
+ return '<span class="badge" style="background:hsl('+hue+' 55% 42%);color:#fff">'+escAttr(s)+'</span> ';}
+let SORT={col:'',dir:1};
+function toggleSort(col){ // 点击表头循环: 升序 → 降序 → 恢复默认
+ if(SORT.col===col){if(SORT.dir>0)SORT.dir=-1;else{SORT.col='';SORT.dir=1;}}else{SORT.col=col;SORT.dir=1;}
+ render();}
 function render(){const keepSel=new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)));
  const list=visibleNodes();
+ // 表头排序（点击列头循环: 升序→降序→恢复默认"在线优先+名称"）
+ if(SORT.col){
+  const D=SORT.dir;
+  const cmpStr=(x,y)=>String(x==null?'':x).localeCompare(String(y==null?'':y),undefined,{numeric:true});
+  list.sort((a,b)=>{
+   const ac=(a.info&&a.info.cfg)||{},bc=(b.info&&b.info.cfg)||{};
+   switch(SORT.col){
+    case 'name':return D*cmpStr(a.name,b.name);
+    case 'group':return D*cmpStr(a.group||'',b.group||'');
+    case 'ip':return D*cmpStr(a.ip,b.ip);
+    case 'ver':return D*cmpStr(a.info.version,b.info.version);
+    case 'rss':return D*((a.info.rss_mb||0)-(b.info.rss_mb||0));
+    case 'conns':return D*((a.info.conns||0)-(b.info.conns||0));
+    case 'cert':{const av=(a.certDays==null?Infinity:a.certDays),bv=(b.certDays==null?Infinity:b.certDays);return D*(av-bv);}
+    case 'panel':{const h=cmpStr(ac.ApiHost,bc.ApiHost);if(h)return D*h;return D*((ac.NodeID||0)-(bc.NodeID||0));}
+    case 'seen':return D*((a.lastSeen||0)-(b.lastSeen||0));
+    case 'online':return D*((a.online?1:0)-(b.online?1:0));
+   }
+   return 0;});
+ }
  const online=NODES.filter(n=>n.online).length;
  document.getElementById('cnt').textContent='· '+online+'/'+NODES.length+' 在线';
  document.getElementById('cnt2').textContent='(显示 '+list.length+'/'+NODES.length+')';
@@ -222,10 +255,12 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  const gf=document.getElementById('groupFilter');const cur=gf.value;
  const groups=[...new Set(NODES.map(n=>n.group).filter(Boolean))].sort();
  if(gf.dataset.sig!==groups.join('|')){gf.dataset.sig=groups.join('|');gf.innerHTML='<option value="">全部分组</option>'+groups.map(g=>'<option value="'+g+'">'+g+'</option>').join('');gf.value=groups.includes(cur)?cur:'';}
- // 面板域名下拉选项
+ // 面板域名下拉选项（带各来源节点数，方便区分）
  const hf=document.getElementById('hostFilter');const curH=hf.value;
  const hosts=[...new Set(NODES.map(n=>(n.info.cfg&&n.info.cfg.ApiHost)||'').filter(Boolean))].sort();
- if(hf.dataset.sig!==hosts.join('|')){hf.dataset.sig=hosts.join('|');hf.innerHTML='<option value="">全部面板域名</option>'+hosts.map(h=>'<option value="'+h+'">'+h+'</option>').join('');hf.value=hosts.includes(curH)?curH:'';}
+ const hc={};NODES.forEach(n=>{const h=(n.info.cfg&&n.info.cfg.ApiHost)||'';if(h)hc[h]=(hc[h]||0)+1;});
+ const hostSig=hosts.map(h=>h+':'+hc[h]).join('|');
+ if(hf.dataset.sig!==hostSig){hf.dataset.sig=hostSig;hf.innerHTML='<option value="">全部面板域名</option>'+hosts.map(h=>'<option value="'+h+'">'+escAttr(h.replace(/^https?:[/][/]/,''))+' · '+hc[h]+'台</option>').join('');hf.value=hosts.includes(curH)?curH:'';}
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
@@ -236,7 +271,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
  '<td>'+(n.info.warp||'-')+'</td>'+
  '<td>'+fmtCert(n.certDays)+'</td>'+
- '<td class="small"><div class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'')+'</div>NodeID '+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</td>'+
+ '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b></div></td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
  '<td>'+fmtAct(n.action)+'</td></tr>').join('');
@@ -253,14 +288,19 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">WARP</span><span>'+(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
- '<span class="k">面板</span><span class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'-')+'</span>'+
+ '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-'):'-'))+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
  (n.desired?'<div class="small" style="margin-top:6px">待下发: '+JSON.stringify(n.desired)+'</div>':'')+
  '</div>').join('');
  document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
  const all=[...document.querySelectorAll('.sel')];
- const sa=document.getElementById('selAll');if(sa)sa.checked=all.length>0&&all.every(x=>x.checked);}
+ const sa=document.getElementById('selAll');if(sa)sa.checked=all.length>0&&all.every(x=>x.checked);
+ // 表头排序指示符（▲/▼）
+ document.querySelectorAll('#tbhead th.sortable').forEach(function(th){
+  const si=th.querySelector('.si');if(!si)return;
+  si.textContent=(SORT.col===th.dataset.col)?(SORT.dir>0?'▲':'▼'):'';
+ });}
 let AUTO=true;let pollTimer=null;
 function pollMs(){const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));return inflight?3000:5000;}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
