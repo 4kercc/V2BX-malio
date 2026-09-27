@@ -855,7 +855,20 @@ const handler = async (req, res) => {
       return json(res, 401, { error: 'bad token' });
     }
     if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用，请在服务端 cloud-data.json 修改 nodeToken 后重启' });
-    const body = await readBody(req);
+    const raw = await new Promise((resolve) => {
+      let b = '';
+      req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); });
+      req.on('end', () => resolve(b));
+    });
+    let body = {};
+    let parseErr = '';
+    if (raw) { try { body = JSON.parse(raw); } catch (e) { parseErr = e.message; body = {}; } }
+    // 诊断: 心跳体无法解析或缺少名称时记日志（限频），用于定位节点上的异常 agent
+    if ((parseErr || !String(body.name || '').trim()) && rateLimit('hblog:' + ip, 1, 10 * 60 * 1000)) {
+      console.log('[heartbeat-anomaly] ip=' + ip + ' ua=' + (req.headers['user-agent'] || '-')
+        + ' bytes=' + raw.length + (parseErr ? (' parseErr=' + parseErr) : '')
+        + ' raw=' + raw.slice(0, 700).replace(/\s+/g, ' '));
+    }
     const rawName = String(body.name || '').trim();
     const name = (rawName || 'unknown').slice(0, 64);
     // 空名称心跳: 正常 agent 一定带 NODE_NAME，出现说明该节点有旧版/残留脚本（会导致重复记录）
