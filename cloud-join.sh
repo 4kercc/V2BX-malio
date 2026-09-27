@@ -48,8 +48,27 @@ echo "  ApiHost : ${CUR_HOST:-未找到(仍可接入)}"
 echo "  NodeID  : ${CUR_ID:-未找到(仍可接入)}"
 
 ############################################
-# 自动命名: node{NodeID}-{短主机名} —— 后台一眼对上"哪台是谁"
+# 名称确定: 优先复用云控上已有身份（按 IP 匹配、在线优先），避免重新对接产生重复节点
+#   1) 命令行显式传入名称 → 用传入的
+#   2) 未传入 → 问云控 /api/whoami：本机 IP 上已有记录则复用（在线优先，其次最近心跳）
+#   3) 云控上查不到 → 自动命名 node{NodeID}-{短主机名}
 ############################################
+CURL_TLS=""
+[[ "$INSECURE" == "insecure" || "$INSECURE" == "1" ]] && CURL_TLS="-k"
+if [[ -z "$NODE_NAME" ]]; then
+    WHOAMI=$(curl -s $CURL_TLS --max-time 10 -X POST "${CLOUD_URL}/api/whoami" \
+        -H "X-Token: ${CLOUD_TOKEN}" -H "Content-Type: application/json" -d '{}' 2>/dev/null)
+    REC_NAME=$(echo "$WHOAMI" | jq -r '.recommend // empty' 2>/dev/null)
+    REC_CNT=$(echo "$WHOAMI" | jq -r '.nodes | length' 2>/dev/null)
+    REC_ONLINE=$(echo "$WHOAMI" | jq -r '[.nodes[] | select(.online)] | length' 2>/dev/null)
+    if [[ -n "$REC_NAME" && "$REC_NAME" != "null" ]]; then
+        NODE_NAME="$REC_NAME"
+        echo -e "${green}✓ 云控上已存在本机记录（同 IP 共 ${REC_CNT:-?} 条，在线 ${REC_ONLINE:-0} 条），复用身份: ${NODE_NAME}${plain}"
+        if [[ "${REC_CNT:-0}" -gt 1 ]]; then
+            echo -e "${yellow}  提示: 同 IP 存在多条记录，已选用在线且最近心跳的那条；如需清理可在面板中重命名或删除其余记录${plain}"
+        fi
+    fi
+fi
 if [[ -z "$NODE_NAME" ]]; then
     if [[ -n "$CUR_ID" ]]; then
         NODE_NAME="node${CUR_ID}-${HS}"

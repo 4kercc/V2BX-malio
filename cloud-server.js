@@ -984,6 +984,26 @@ const handler = async (req, res) => {
     return json(res, 200, reply);
   }
 
+  // ---------- 节点自查询：按调用方 IP 匹配已有记录，供重新对接时复用身份，避免产生重复节点 ----------
+  if (url === '/api/whoami' && req.method === 'POST') {
+    if (!rateLimit('hb:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
+      rateLimit('fail:' + ip, 10, 60000);
+      return json(res, 401, { error: 'bad token' });
+    }
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用，请在服务端 cloud-data.json 修改 nodeToken 后重启' });
+    const now = Date.now();
+    const list = Object.entries(data.nodes)
+      .filter(([, n]) => n.ip === ip)
+      .map(([key, n]) => ({
+        key, name: n.name,
+        online: now - (n.lastSeen || 0) < 5 * 60 * 1000,
+        lastSeen: n.lastSeen || 0, agentVer: n.agentVer || ''
+      }))
+      .sort((a, b) => (b.online - a.online) || (b.lastSeen - a.lastSeen)); // 在线优先，其次最近心跳
+    return json(res, 200, { ip, nodes: list, recommend: list.length ? list[0].name : '' });
+  }
+
   // ---------- 节点长轮询：挂起连接等待任务，管理端下发命令时立即唤醒（秒级送达） ----------
   // 只做「有没有活」的判断，不改任何节点记录；被唤醒后节点会立刻跑一轮完整心跳来领取任务
   if (url === '/api/wait' && req.method === 'POST') {

@@ -42,6 +42,7 @@ if [[ "$MODE" == "usage" ]]; then
   echo -e "${cyan}用法（二选一）:${plain}"
   echo "  1) 全新安装 / 重新对接:"
   echo "     bash <(curl -fsSL $REPO_RAW/cloud-agent-update.sh) \"https://云控地址:8765\" \"节点Token\""
+  echo "     说明: 本机若已存在于云控（按 IP 匹配）会自动复用原节点身份，不会产生重复节点"
   echo "     可选: 第 3 个参数=自定义节点名, 第 4 个参数=insecure(云控为自签 HTTPS 时)"
   echo "  2) 若本机已接入过，直接不带参数执行即可更新:"
   echo "     bash <(curl -fsSL $REPO_RAW/cloud-agent-update.sh)"
