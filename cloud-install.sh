@@ -144,7 +144,7 @@ cat > "$INSTALL_DIR/credentials.txt" <<EOF
 管理Token: ${ADMIN_TOKEN}
 节点Token: ${NODE_TOKEN}
 后台地址:  ${SCHEME_URL}://${PUBLIC_IP}:${CLOUD_PORT}
-模式:      ${MODE}${[[ "$MODE" == "https" ]] && echo " (自签证书)"}
+模式:      ${MODE}$([[ "$MODE" == "https" ]] && echo " (自签证书)")
 EOF
 chmod 600 "$INSTALL_DIR/credentials.txt"
 
