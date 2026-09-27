@@ -58,8 +58,9 @@ const UI = `<!DOCTYPE html>
 body{margin:0;background:hsl(var(--background));color:hsl(var(--foreground));
  font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1200px;margin:0 auto;padding:16px}
-@media(min-width:768px){.wrap{padding:24px}}
+.wrap{max-width:none;margin:0;padding:16px}
+@media(min-width:768px){.wrap{padding:20px 24px}}
+@media(min-width:1600px){.wrap{padding:20px 32px}}
 h1{font-size:18px;font-weight:600;margin:0;letter-spacing:-.01em}
 .muted{color:hsl(var(--muted-fg));font-size:12px}
 .card{border:1px solid hsl(var(--border));border-radius:var(--radius);background:hsl(var(--card));color:hsl(var(--card-fg));padding:16px;margin-bottom:16px}
@@ -85,9 +86,9 @@ input::placeholder{color:hsl(var(--muted-fg))}
 .head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .head-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .tbwrap{overflow-x:auto;border:1px solid hsl(var(--border));border-radius:var(--radius)}
-table{width:100%;border-collapse:collapse;font-size:13px;min-width:960px}
-th{background:hsl(var(--muted));color:hsl(var(--muted-fg));font-weight:500;text-align:left;padding:9px 12px;white-space:nowrap}
-td{padding:10px 12px;border-top:1px solid hsl(var(--border));vertical-align:top}
+table{width:100%;border-collapse:collapse;font-size:13px;min-width:1040px}
+th{background:hsl(var(--muted));color:hsl(var(--muted-fg));font-weight:500;text-align:left;padding:9px 10px;white-space:nowrap}
+td{padding:10px;border-top:1px solid hsl(var(--border));vertical-align:top}
 tbody tr:hover{background:hsl(var(--accent)/.5)}
 .badge{display:inline-flex;align-items:center;border-radius:9999px;padding:2px 9px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
 .b-ok{background:hsl(var(--ok)/.12);color:hsl(var(--ok));border-color:hsl(var(--ok)/.35)}
@@ -146,6 +147,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-ghost" onclick="clearDesired()">清除选中节点的期望配置</button>
   <input id="fGroup" placeholder="分组标签" style="width:140px;height:32px">
   <button class="btn btn-outline btn-sm" onclick="setGroup()">设置选中分组</button>
+  <button class="btn btn-outline btn-sm" onclick="deleteNodes()" title="删除选中节点的云控记录（不影响节点上的服务）">🗑 删除选中</button>
   <button class="btn btn-outline btn-sm" onclick="showCert()">🔐 证书到期</button>
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
@@ -387,6 +389,13 @@ async function doAction(a){const t=targets();if(!t)return;
  showModal('已为 '+d.queued+' 台节点排队: '+(a==='update'?'升级':'重启'), lines,
    '状态流转: ⏳ 排队中 → 🔄 已下发(等心跳) → ✅ 已完成<br>页面自动刷新，有任务时 3 秒一次');}
 async function clearDesired(){const t=targets();if(!t)return;await api('/api/desired/clear',{targets:t});show('已清除期望配置');}
+function deleteNodes(){const t=targets();if(!t)return;
+ const names=NODES.filter(n=>t.indexOf(n.key)>=0).map(n=>n.name);
+ uiConfirm('删除 '+names.length+' 条节点记录？['+names.join('、')+'] —— 仅删除云控里的记录与历史，不影响节点上的 V2bX 服务；若该节点仍在心跳，记录会被重新创建',function(ok){
+  if(!ok)return;
+  api('/api/node_delete',{targets:t}).then(function(d){
+   if(d.error){show('被拒绝: '+d.error);return;}
+   show('✓ 已删除 '+d.deleted+' 条节点记录');refresh();});});}
 async function saveSettings(){const v=document.getElementById('sUpdateVer').value.trim();
  const av=document.getElementById('sAgentVer').value.trim();
  const d=await api('/api/settings',{updateVersion:v,
@@ -1150,6 +1159,23 @@ const handler = async (req, res) => {
   }
 
   // 一键查询选中节点的证书到期时间（写入待查询标记 → 长轮询即时唤醒 → 节点回报 cert 详情）
+  // 删除节点记录（清理重复/孤儿记录；只删云控侧数据，不影响节点上的服务）
+  if (url === '/api/node_delete' && req.method === 'POST') {
+    const body = await readBody(req);
+    const keys = Array.isArray(body.targets) ? body.targets : [];
+    const names = [];
+    for (const key of keys) {
+      const n = data.nodes[key];
+      if (!n) continue;
+      names.push(n.name);
+      delete data.nodes[key];
+    }
+    if (!names.length) return json(res, 400, { error: '未匹配到可删除的节点记录' });
+    audit('node-delete', '删除节点记录 ' + names.length + ' 条: ' + names.join(', '));
+    saveData(data);
+    return json(res, 200, { ok: true, deleted: names.length, names });
+  }
+
   if (url === '/api/cert_query' && req.method === 'POST') {
     const body = await readBody(req);
     const hit = [];

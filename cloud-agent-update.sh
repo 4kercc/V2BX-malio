@@ -112,6 +112,12 @@ fi
 echo -e "${cyan}== 3/4 校准 cron 兜底 ==${plain}"
 (crontab -l 2>/dev/null | grep -v "cloud-agent.sh"; echo "*/2 * * * * $DIR/cloud-agent.sh >/dev/null 2>&1") | crontab -
 echo -e "  ${green}✓${plain} 已就绪（守护与 cron 互不冲突）"
+# 体检: 列出可能残留的其它 agent/云控相关定时任务（会导致同一节点出现重复记录）
+STRAY=$(crontab -l 2>/dev/null | grep -iE "agent|cloud|v2bx" | grep -v "$DIR/cloud-agent.sh" || true)
+if [[ -n "$STRAY" ]]; then
+  echo -e "  ${yellow}!${plain} 发现可能残留的定时任务（若节点在面板里出现重复记录，请检查这几条）:"
+  echo "$STRAY" | sed 's/^/      /'
+fi
 
 echo -e "${cyan}== 4/4 立即跑一轮验证 ==${plain}"
 if bash "$DIR/cloud-agent.sh"; then
