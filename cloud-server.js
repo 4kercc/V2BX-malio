@@ -13,6 +13,7 @@
  *  - 仍需自行用 Nginx/Caddy 反代启用 HTTPS 后再暴露公网
  */
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -139,6 +140,8 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-outline" onclick="doAction('restart')">重启选中</button>
   <button class="btn btn-outline" onclick="doAction('update')">升级选中</button>
   <button class="btn btn-ghost" onclick="clearDesired()">清除选中节点的期望配置</button>
+  <input id="fGroup" placeholder="分组标签" style="width:140px;height:32px">
+  <button class="btn btn-outline btn-sm" onclick="setGroup()">设置选中分组</button>
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
 </div>
@@ -164,17 +167,40 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
     <button class="btn btn-outline" style="flex:0 0 auto" onclick="saveSettings()">保存设置</button>
    </div>
   </div>
+  <div>
+   <div class="muted" style="margin-bottom:4px">Agent 目标版本 <span>（数字，与节点上报不一致时自动自更新；留空关闭）</span></div>
+   <input id="sAgentVer" placeholder="如 6">
+  </div>
+  <div>
+   <div class="muted" style="margin-bottom:4px">Telegram Bot Token <span>（告警推送，可留空）</span></div>
+   <input id="sTgBot" placeholder="123456:ABC-DEF...">
+  </div>
+  <div>
+   <div class="muted" style="margin-bottom:4px">Telegram Chat ID</div>
+   <input id="sTgChat" placeholder="-100123456789">
+  </div>
+  <div>
+   <div class="muted" style="margin-bottom:4px">Webhook URL <span>（备选告警通道）</span></div>
+   <input id="sWebhook" placeholder="https://...">
+  </div>
  </div>
+ <div class="row"><button class="btn btn-outline btn-sm" onclick="saveSettings()">保存全部设置</button></div>
 </div>
 
 <div id="msg"></div>
 
 <div class="card">
  <p class="card-title">节点列表 <span class="muted" id="cnt2" style="font-weight:400"></span></p>
+ <div class="row" style="margin:0 0 10px">
+  <select id="groupFilter" onchange="render()" style="width:auto;min-width:140px">
+   <option value="">全部分组</option>
+  </select>
+  <button class="btn btn-ghost btn-sm" onclick="showAudit()">📜 审计 / 事件日志</button>
+ </div>
  <div class="tbwrap">
   <table><thead><tr>
    <th style="width:32px"><input type="checkbox" id="selAll" onchange="toggleAll(this)" style="width:14px;height:14px;padding:0"></th>
-   <th>状态</th><th>名称</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>面板 / 节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
+   <th>状态</th><th>名称</th><th>分组</th><th>IP</th><th>版本</th><th>内存</th><th>连接</th><th>WARP</th><th>证书</th><th>面板 / 节点ID</th><th>最后心跳</th><th>待下发</th><th>最近动作</th>
   </tr></thead><tbody id="tb"></tbody></table>
  </div>
  <div class="only-mobile" id="mc"></div>
@@ -211,30 +237,46 @@ function fmtAct(a){if(!a)return badge('b-mut','-');
  if(a.status==='done')return badge('b-ok','✅ 已完成')+(a.inferred?' <span class="small">(推断)</span>':'')+'<div class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</div>';
  if(a.status==='delivered')return badge('b-info','🔄 已下发')+'<div class="small">等节点心跳执行 · '+t+'</div>';
  return badge('b-mut','-');}
+function fmtCert(d){if(d===null||d===undefined)return badge('b-mut','-');
+ if(d<=7)return badge('b-bad','⚠ '+d+'天');
+ if(d<=14)return badge('b-warn',d+'天');
+ if(d<=21)return badge('b-info',d+'天');
+ return badge('b-ok',d+'天');}
+function visibleNodes(){const gf=document.getElementById('groupFilter').value;
+ return NODES.filter(n=>!gf||n.group===gf);}
 function render(){const keepSel=new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)));
+ const list=visibleNodes();
  const online=NODES.filter(n=>n.online).length;
  document.getElementById('cnt').textContent='· '+online+'/'+NODES.length+' 在线';
- document.getElementById('cnt2').textContent='';
- document.getElementById('tb').innerHTML=NODES.map(n=>'<tr>'+
+ document.getElementById('cnt2').textContent='(显示 '+list.length+'/'+NODES.length+')';
+ // 分组下拉选项
+ const gf=document.getElementById('groupFilter');const cur=gf.value;
+ const groups=[...new Set(NODES.map(n=>n.group).filter(Boolean))].sort();
+ if(gf.dataset.sig!==groups.join('|')){gf.dataset.sig=groups.join('|');gf.innerHTML='<option value="">全部分组</option>'+groups.map(g=>'<option value="'+g+'">'+g+'</option>').join('');gf.value=groups.includes(cur)?cur:'';}
+ document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'</td>'+
- '<td style="font-weight:500">'+n.name+'</td><td>'+n.ip+'</td>'+
+ '<td style="font-weight:500"><a href="#" onclick="showNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'));return false" style="color:hsl(var(--info));text-decoration:none">'+n.name+'</a></td>'+
+ '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
+ '<td>'+n.ip+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',n.info.version):'-')+'</td>'+
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
  '<td>'+(n.info.warp||'-')+'</td>'+
+ '<td>'+fmtCert(n.certDays)+'</td>'+
  '<td class="small"><div class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'')+'</div>NodeID '+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
- '<td class="small">'+(n.desired?badge('b-warn','待应用')+'<div class="small ellip" style="max-width:150px">'+JSON.stringify(n.desired)+'</div>':'-')+'</td>'+
+ '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
  '<td>'+fmtAct(n.action)+'</td></tr>').join('');
- document.getElementById('mc').innerHTML=NODES.map(n=>'<div class="ncard">'+
+ document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
  '<div class="nrow"><div style="display:flex;align-items:center;gap:8px">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<b>'+n.name+'</b></div>'+fmtAct(n.action)+'</div>'+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<b>'+n.name+'</b>'+(n.group?' '+badge('b-mut',n.group):'')+'</div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
  '<span class="k">连接</span><span>'+(n.info.conns||0)+'</span>'+
  '<span class="k">WARP</span><span>'+(n.info.warp||'-')+'</span>'+
+ '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'-')+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
@@ -249,9 +291,39 @@ async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;
  document.getElementById('sNodeToken').value=d.nodeToken||'';
  document.getElementById('joinCmd').value='bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) "'+location.origin+'" "'+(d.nodeToken||'')+'"';
  if(document.getElementById('sUpdateVer')!==document.activeElement)document.getElementById('sUpdateVer').value=d.updateVersion||'';
+ if(document.getElementById('sAgentVer')!==document.activeElement)document.getElementById('sAgentVer').value=d.agentVersion||'';
+ if(document.getElementById('sTgBot')!==document.activeElement)document.getElementById('sTgBot').value=d.tgBotToken||'';
+ if(document.getElementById('sTgChat')!==document.activeElement)document.getElementById('sTgChat').value=d.tgChatId||'';
+ if(document.getElementById('sWebhook')!==document.activeElement)document.getElementById('sWebhook').value=d.webhookUrl||'';
  render();
  const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));
  document.getElementById('lastRefresh').textContent='上次刷新 '+new Date().toLocaleTimeString()+(inflight&&AUTO?' · ⚡ 任务执行中 3s 快速轮询':'');}catch(e){}}
+function sparkline(series,color){if(!series||series.length<2)return '<div class="muted">数据收集中...</div>';
+ const w=460,h=90,p=4;const vals=series.map(s=>s.v);const max=Math.max(...vals,1);const min=Math.min(...vals,0);
+ const pts=series.map((s,i)=>(p+i*(w-2*p)/(series.length-1)).toFixed(1)+','+(h-p-((s.v-min)/(max-min||1))*(h-2*p)).toFixed(1)).join(' ');
+ return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:'+h+'px;background:hsl(var(--muted));border-radius:6px">'+
+ '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="2"/></svg>';}
+async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
+ const d=await api('/api/node_detail?key='+encodeURIComponent(key));
+ if(d.error){show('加载失败: '+d.error);return;}
+ const m=d.metrics||{};const recent=(m.recent||[]).map(s=>({v:s.rss}));
+ const conns=(m.recent||[]).map(s=>({v:s.c}));
+ const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
+ showModal('📊 '+d.name+(d.group?' ['+d.group+']':''), [
+  'IP '+d.ip+' · 版本 '+(d.info.version||'-')+' · Agent v'+(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays),
+  '<b>内存趋势（近 3 小时）</b>'+sparkline(recent,'hsl(217 91% 60%)'),
+  '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
+  (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
+ ], '指标每 2 分钟采集一次：近 3 小时明细 + 7 天降采样');}
+async function showAudit(){const d=await api('/api/audit');
+ const aud=(d.audit||[]).map(a=>'<li><span class="muted">'+new Date(a.t).toLocaleString()+'</span> — <b>'+a.act+'</b> '+a.detail+'</li>').join('');
+ const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
+ showModal('📜 审计与事件', [
+  '<b>管理操作审计</b>'+(aud?'<ul style="margin:4px 0">'+aud+'</ul>':'<div class="muted">暂无</div>'),
+  '<b>节点事件</b>'+(evs?'<ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无</div>')
+ ], '审计记录管理端全部下发操作；事件记录上下线/证书告警');}
+async function setGroup(){const t=targets();if(!t)return;const g=document.getElementById('fGroup').value.trim();
+ const d=await api('/api/groups',{targets:t,group:g});show(d.error?('被拒绝: '+d.error):('✓ 已将 '+d.applied+' 台节点分组设为 ['+(d.group||'无')+']'));}
 function scheduleRefresh(){if(pollTimer)clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(AUTO)refresh();scheduleRefresh();},pollMs());}
 function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');if(AUTO)refresh();}
 function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){alert('请先勾选节点');return null;}return s;}
@@ -290,7 +362,12 @@ async function doAction(a){const t=targets();if(!t)return;
    '状态流转: ⏳ 排队中 → 🔄 已下发(等心跳) → ✅ 已完成<br>页面自动刷新，有任务时 3 秒一次');}
 async function clearDesired(){const t=targets();if(!t)return;await api('/api/desired/clear',{targets:t});show('已清除期望配置');}
 async function saveSettings(){const v=document.getElementById('sUpdateVer').value.trim();
- const d=await api('/api/settings',{updateVersion:v});show(d.error?('被拒绝: '+d.error):('设置已保存: 升级版本锁定 = '+(v||'最新版')));}
+ const d=await api('/api/settings',{updateVersion:v,
+  agentVersion:document.getElementById('sAgentVer').value.trim(),
+  tgBotToken:document.getElementById('sTgBot').value.trim(),
+  tgChatId:document.getElementById('sTgChat').value.trim(),
+  webhookUrl:document.getElementById('sWebhook').value.trim()});
+ show(d.error?('被拒绝: '+d.error):('✓ 设置已保存（'+(d.error?'':(v?'版本锁定 '+v:'最新版')+' / Agent '+(document.getElementById('sAgentVer').value.trim()||'关闭自更新')+' / 告警通道已更新）')));}
 function copyJoin(){const v=document.getElementById('joinCmd').value;
  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(()=>show('✓ 对接脚本已复制到剪贴板')).catch(()=>{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');});}
  else{fallbackCopy(v);show('✓ 对接脚本已复制到剪贴板');}}
@@ -317,6 +394,13 @@ function loadData() {
   if (!d.nodeToken) d.nodeToken = d.token; // 旧版数据迁移
   if (d.updateVersion === undefined) d.updateVersion = '';
   if (!d.nodes) d.nodes = {};
+  // v3 迁移: P0/P1 新字段
+  if (!d.agentVersion) d.agentVersion = '';
+  if (!d.tgBotToken) d.tgBotToken = '';
+  if (!d.tgChatId) d.tgChatId = '';
+  if (!d.webhookUrl) d.webhookUrl = '';
+  if (!d.audit) d.audit = [];
+  if (!d.events) d.events = [];
   return d;
 }
 function saveData(d) {
@@ -324,6 +408,101 @@ function saveData(d) {
 }
 let data = loadData();
 saveData(data);
+
+// ---------- 通知（Telegram / Webhook，零依赖异步发送） ----------
+function notify(text) {
+  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const body = '[' + stamp + '] ' + text;
+  try {
+    if (data.tgBotToken && data.tgChatId) {
+      const payload = JSON.stringify({ chat_id: data.tgChatId, text: body });
+      const rq = https.request({
+        hostname: 'api.telegram.org',
+        path: '/bot' + data.tgBotToken + '/sendMessage',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 8000
+      }, () => {});
+      rq.on('error', () => {});
+      rq.on('timeout', () => rq.destroy());
+      rq.end(payload);
+    }
+    if (data.webhookUrl && /^https?:\/\//.test(data.webhookUrl)) {
+      const u = new URL(data.webhookUrl);
+      const payload = JSON.stringify({ text: body });
+      const rq = https.request({
+        hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+        timeout: 8000
+      }, () => {});
+      rq.on('error', () => {});
+      rq.on('timeout', () => rq.destroy());
+      rq.end(payload);
+    }
+  } catch (e) {}
+}
+
+// ---------- 审计日志 ----------
+function audit(act, detail) {
+  data.audit.unshift({ t: Date.now(), act, detail: String(detail).slice(0, 300) });
+  if (data.audit.length > 200) data.audit.length = 200;
+}
+
+// ---------- 事件 ----------
+function addEvent(nodeName, type, text) {
+  const ev = { t: Date.now(), node: nodeName, type, text: String(text).slice(0, 200) };
+  data.events.unshift(ev);
+  if (data.events.length > 200) data.events.length = 200;
+  return ev;
+}
+
+// ---------- 指标历史（近 3h 明细 + 7 天 30min 降采样） ----------
+function pushMetrics(rec, rss, conns) {
+  const now = Date.now();
+  rec.metrics = rec.metrics || { recent: [], daily: [] };
+  const m = rec.metrics;
+  m.recent.push({ t: now, rss: rss || 0, c: conns || 0 });
+  while (m.recent.length && m.recent[0].t < now - 3 * 3600 * 1000) m.recent.shift();
+  if (m.recent.length > 120) m.recent.shift();
+  const last = m.daily.length ? m.daily[m.daily.length - 1] : null;
+  if (!last || now - last.t >= 30 * 60 * 1000) {
+    m.daily.push({ t: now, rss: rss || 0, c: conns || 0 });
+    while (m.daily.length && m.daily[0].t < now - 7 * 86400 * 1000) m.daily.shift();
+  }
+}
+
+// ---------- 每日自动备份 cloud-data.json（保留 7 份） ----------
+const BACKUP_DIR = path.join(__dirname, 'backups');
+let lastBackupDay = '';
+function backupDaily() {
+  const day = new Date().toISOString().slice(0, 10);
+  if (day === lastBackupDay) return;
+  lastBackupDay = day;
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    fs.copyFileSync(DATA_FILE, path.join(BACKUP_DIR, 'cloud-data-' + day + '.json'));
+    const files = fs.readdirSync(BACKUP_DIR).filter(f => f.startsWith('cloud-data-')).sort();
+    while (files.length > 7) fs.unlinkSync(path.join(BACKUP_DIR, files.shift()));
+  } catch (e) {}
+}
+backupDaily();
+setInterval(backupDaily, 3600 * 1000);
+
+// ---------- 离线检测巡检（60s，状态翻转时事件+通知） ----------
+setInterval(() => {
+  const now = Date.now();
+  let changed = false;
+  for (const [, n] of Object.entries(data.nodes)) {
+    const online = now - n.lastSeen < 5 * 60 * 1000;
+    if (!online && !n.offlineNotified && n.created && now - n.created > 5 * 60 * 1000) {
+      n.offlineNotified = true;
+      const ev = addEvent(n.name, 'offline', '节点离线（超过 5 分钟无心跳）');
+      notify('🔴 [' + n.name + '] ' + ev.text);
+      changed = true;
+    }
+  }
+  if (changed) saveData(data);
+}, 60 * 1000);
 
 // ---------- 安全工具 ----------
 function safeEqual(a, b) {
@@ -407,9 +586,38 @@ const handler = async (req, res) => {
       uptime_sec: body.uptime_sec || 0, warp: body.warp || 'unknown',
       cfg: body.cfg || {}, load: body.load || ''
     };
+    // 恢复在线事件（此前被巡检标记为离线）
+    if (rec.offlineNotified) {
+      rec.offlineNotified = false;
+      const ev = addEvent(rec.name, 'online', '节点恢复在线');
+      notify('🟢 [' + rec.name + '] ' + ev.text);
+    }
+    // 指标历史入库
+    pushMetrics(rec, rec.info.rss_mb, rec.info.conns);
+    // agent 版本 + 证书剩余天数
+    rec.agentVer = String(body.agentVer || '');
+    if (body.certDays !== undefined && body.certDays !== null && body.certDays !== '') {
+      const cd = Number(body.certDays);
+      if (Number.isFinite(cd)) {
+        rec.certDays = cd;
+        const level = cd <= 7 ? 3 : cd <= 14 ? 2 : cd <= 21 ? 1 : 0;
+        const prevLevel = rec.certWarnLevel || 0;
+        if (level > prevLevel && level > 0) {
+          const dom = (rec.info.cfg && rec.info.cfg.CertDomain) || '';
+          const ev = addEvent(rec.name, 'cert', '证书 ' + dom + ' 剩余 ' + cd + ' 天');
+          notify('⚠️ [' + rec.name + '] ' + ev.text);
+          rec.certWarnLevel = level;
+        } else if (level === 0 && prevLevel > 0) {
+          rec.certWarnLevel = 0; // 已续期，静默重置
+        }
+      }
+    }
     const pending = rec.pendingAction;
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     if (pending === 'update') reply.version = data.updateVersion || '';
+    // agent 自更新: 服务端设定版本与节点上报版本不一致时下发
+    rec.agentVer = String(body.agentVer || '');
+    if (data.agentVersion && rec.agentVer !== String(data.agentVersion)) reply.agentUpdate = '1';
     if (pending) {
       rec.pendingAction = null; // 动作一次性下发
       if (rec.action && rec.action.status === 'queued') {
@@ -478,9 +686,44 @@ const handler = async (req, res) => {
     const list = Object.entries(data.nodes).map(([key, n]) => ({
       key, name: n.name, ip: n.ip, lastSeen: n.lastSeen,
       online: now - n.lastSeen < 5 * 60 * 1000, info: n.info,
+      group: n.group || '', certDays: (n.certDays === undefined ? null : n.certDays),
+      agentVer: n.agentVer || '',
       desired: n.desired || null, action: effAction(n)
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
-    return json(res, 200, { token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion, nodes: list });
+    return json(res, 200, {
+      token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion,
+      agentVersion: data.agentVersion, groups: [...new Set(Object.values(data.nodes).map(n => n.group).filter(Boolean))],
+      nodes: list
+    });
+  }
+
+  if (url === '/api/node_detail' && req.method === 'GET') {
+    const key = decodeURIComponent((req.url.split('?')[1] || '').match(/key=([^&]+)/) ? req.url.split('?')[1].match(/key=([^&]+)/)[1] : '');
+    const n = data.nodes[key];
+    if (!n) return json(res, 404, { error: 'not found' });
+    return json(res, 200, {
+      name: n.name, ip: n.ip, group: n.group || '', certDays: (n.certDays === undefined ? null : n.certDays),
+      agentVer: n.agentVer || '', info: n.info,
+      metrics: n.metrics || { recent: [], daily: [] },
+      events: (n.events || []).slice(0, 30),
+      action: n.action || null
+    });
+  }
+
+  if (url === '/api/audit' && req.method === 'GET') {
+    return json(res, 200, { audit: (data.audit || []).slice(0, 100), events: (data.events || []).slice(0, 100) });
+  }
+
+  if (url === '/api/groups' && req.method === 'POST') {
+    const body = await readBody(req);
+    const g = String(body.group || '').trim().slice(0, 24);
+    let count = 0;
+    for (const [key, n] of Object.entries(data.nodes)) {
+      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.group = g; count++; }
+    }
+    audit('group', '设置分组 [' + (g || '无') + '] 到 ' + count + ' 台节点');
+    saveData(data);
+    return json(res, 200, { ok: true, applied: count, group: g });
   }
 
   if (url === '/api/desired' && req.method === 'POST') {
@@ -501,6 +744,7 @@ const handler = async (req, res) => {
         count++;
       }
     }
+    audit('desired', '下发配置 ' + JSON.stringify(fields) + ' 到 ' + count + ' 台节点');
     saveData(data);
     return json(res, 200, { ok: true, applied: count, fields });
   }
@@ -511,6 +755,7 @@ const handler = async (req, res) => {
     for (const [key, n] of Object.entries(data.nodes)) {
       if (body.targets === 'all' || (body.targets || []).includes(key)) { n.desired = null; count++; }
     }
+    audit('desired-clear', '清除 ' + count + ' 台节点的期望配置');
     saveData(data);
     return json(res, 200, { ok: true, cleared: count });
   }
@@ -531,22 +776,33 @@ const handler = async (req, res) => {
         count++;
       }
     }
+    audit('action', '排队动作 [' + act + (act === 'update' && data.updateVersion ? ' ' + data.updateVersion : '') + '] 到 ' + count + ' 台节点');
     saveData(data);
     return json(res, 200, { ok: true, queued: count, action: act, version: act === 'update' ? (data.updateVersion || '') : undefined });
   }
 
   if (url === '/api/settings' && req.method === 'POST') {
     const body = await readBody(req);
+    const changes = [];
     if (body.updateVersion !== undefined) {
       const v = String(body.updateVersion).trim();
       if (v && !/^v[0-9][\w.\-]*$/.test(v)) return json(res, 400, { error: '版本号格式非法（示例: v1.0.9）' });
-      data.updateVersion = v;
+      data.updateVersion = v; changes.push('升级版本锁定=' + (v || '无'));
     }
     if (body.newNodeToken && String(body.newNodeToken).length >= 16) {
-      data.nodeToken = String(body.newNodeToken);
+      data.nodeToken = String(body.newNodeToken); changes.push('nodeToken 已更换');
     }
+    if (body.tgBotToken !== undefined) { data.tgBotToken = String(body.tgBotToken).trim(); changes.push('TG Bot Token 已更新'); }
+    if (body.tgChatId !== undefined) { data.tgChatId = String(body.tgChatId).trim(); changes.push('TG ChatID 已更新'); }
+    if (body.webhookUrl !== undefined) { data.webhookUrl = String(body.webhookUrl).trim(); changes.push('Webhook 已更新'); }
+    if (body.agentVersion !== undefined) {
+      const av = String(body.agentVersion).trim();
+      if (av && !/^[0-9]+$/.test(av)) return json(res, 400, { error: 'agentVersion 必须为数字版本号' });
+      data.agentVersion = av; changes.push('Agent 目标版本=' + (av || '关闭自更新'));
+    }
+    audit('settings', changes.join('; ') || '无变更');
     saveData(data);
-    return json(res, 200, { ok: true, nodeToken: data.nodeToken, updateVersion: data.updateVersion });
+    return json(res, 200, { ok: true, nodeToken: data.nodeToken, updateVersion: data.updateVersion, agentVersion: data.agentVersion });
   }
 
   if (url === '/api/token' && req.method === 'POST') {

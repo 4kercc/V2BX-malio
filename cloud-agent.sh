@@ -9,6 +9,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
+AGENT_VER="6"
 
 [[ -f "$CONF" ]] || exit 0
 source "$CONF"
@@ -51,6 +52,16 @@ else
   WARP="none"
 fi
 
+# 证书剩余天数（取配置里的 CertFile）
+CERT_DAYS=""
+CERT_FILE=$(grep -oP '"CertFile"\s*:\s*"\K[^"]+' "$CONFIG_JSON" 2>/dev/null | head -1)
+if [[ -n "$CERT_FILE" && -f "$CERT_FILE" ]] && command -v openssl >/dev/null; then
+  CERT_END=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+  if [[ -n "$CERT_END" ]]; then
+    CERT_DAYS=$(( ( $(date -d "$CERT_END" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+  fi
+fi
+
 # 当前配置
 get_str() { grep -oP "\"$1\"\s*:\s*\"\K[^\"]+" "$CONFIG_JSON" 2>/dev/null | head -1; }
 get_int() { grep -oP "\"$1\"\s*:\s*\K[0-9]+" "$CONFIG_JSON" 2>/dev/null | head -1; }
@@ -80,6 +91,8 @@ PAYLOAD=$(cat <<EOF
   "warp": "${WARP}",
   "load": "${LOAD}",
   "ack": "${ACK}",
+  "agentVer": "${AGENT_VER}",
+  "certDays": ${CERT_DAYS:-null},
   "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}"}
 }
 EOF
@@ -185,6 +198,24 @@ if [[ "$ACTION" == "update" ]]; then
     nohup bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/update-v2bx.sh) >> /var/log/v2bx-cloud-update.log 2>&1 &
   fi
   echo "update $(date +%s)" > /tmp/.v2bx-cloud-ack
+  exit 0
+fi
+# agent 自更新: 服务端下发版本号与本机不一致时，拉取新版并校验替换
+AGENT_UPDATE=$(echo "$RESP" | jq -r ".agentUpdate // \"0\"" 2>/dev/null)
+if [[ "$AGENT_UPDATE" == "1" ]]; then
+  log "agent: self-update to server version"
+  curl $CURL_TLS -fsSL -o /usr/local/V2bX/cloud-agent.sh.new \
+    "https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh?cb=$(date +%s%N)" 2>/dev/null
+  if [[ -s /usr/local/V2bX/cloud-agent.sh.new ]] \
+     && bash -n /usr/local/V2bX/cloud-agent.sh.new 2>/dev/null \
+     && grep -q 'AGENT_VER' /usr/local/V2bX/cloud-agent.sh.new; then
+    mv -f /usr/local/V2bX/cloud-agent.sh.new /usr/local/V2bX/cloud-agent.sh
+    chmod +x /usr/local/V2bX/cloud-agent.sh
+    log "agent: self-update applied"
+  else
+    rm -f /usr/local/V2bX/cloud-agent.sh.new
+    log "agent: self-update download invalid, skipped"
+  fi
   exit 0
 fi
 
