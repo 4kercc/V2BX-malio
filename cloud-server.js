@@ -856,7 +856,13 @@ const handler = async (req, res) => {
     }
     if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用，请在服务端 cloud-data.json 修改 nodeToken 后重启' });
     const body = await readBody(req);
-    const name = String(body.name || 'unknown').slice(0, 64);
+    const rawName = String(body.name || '').trim();
+    const name = (rawName || 'unknown').slice(0, 64);
+    // 空名称心跳: 正常 agent 一定带 NODE_NAME，出现说明该节点有旧版/残留脚本（会导致重复记录）
+    if (!rawName && rateLimit('noname:' + ip, 1, 30 * 60 * 1000)) {
+      const ev = addEvent('unknown', 'warn', '收到无名称心跳（来自 ' + ip + '）——该节点可能存在旧版 agent 或残留定时任务，请在节点上重跑 cloud-agent-update.sh');
+      notify('⚠️ ' + ev.text);
+    }
     const key = name + '|' + ip;
     let rec = data.nodes[key];
     if (!rec) {
