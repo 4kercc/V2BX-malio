@@ -228,7 +228,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  if(hf.dataset.sig!==hosts.join('|')){hf.dataset.sig=hosts.join('|');hf.innerHTML='<option value="">全部面板域名</option>'+hosts.map(h=>'<option value="'+h+'">'+h+'</option>').join('');hf.value=hosts.includes(curH)?curH:'';}
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
- '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止'):'')+'</td>'+
+ '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
  '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+'</td>'+
  '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
  '<td>'+n.ip+'</td>'+
@@ -243,7 +243,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
  '<div class="nrow"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止'):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
  (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+
  '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button></div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
@@ -251,7 +251,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
  '<span class="k">连接</span><span>'+(n.info.conns||0)+'</span>'+
  '<span class="k">WARP</span><span>'+(n.info.warp||'-')+'</span>'+
- '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-')))+'</span>'+
+ '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'-')+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
@@ -913,15 +913,17 @@ const handler = async (req, res) => {
       }
     }
     // 服务健康告警: agent 在线但 V2bX 未运行/未安装（agent v8 起上报 svc）
+    // 注意: activating 多为 systemd 单元类型(如 Type=notify)导致的"启动中"假象，不计入故障告警
     const svc = rec.info.svc;
-    if (svc && svc !== 'active') {
+    const svcBad = svc && svc !== 'active' && svc !== 'activating';
+    if (svcBad) {
       if (rec.svcWarn !== svc) {
         rec.svcWarn = svc;
         const txt = svc === 'absent' ? 'V2bX 未安装（仅 agent 在线）' : 'V2bX 服务未运行（agent 在线）';
         const ev = addEvent(rec.name, 'service', txt);
         notify('🔴 [' + rec.name + '] ' + ev.text);
       }
-    } else if (svc === 'active' && rec.svcWarn) {
+    } else if ((svc === 'active' || svc === 'activating') && rec.svcWarn) {
       rec.svcWarn = null;
       const ev = addEvent(rec.name, 'service', 'V2bX 服务已恢复运行');
       notify('🟢 [' + rec.name + '] ' + ev.text);
