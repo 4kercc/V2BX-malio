@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="12"
+AGENT_VER="13"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -93,8 +93,12 @@ fi
 # 实例枚举与工具函数
 ############################################
 NODE_CNT=$(jq -r '.Nodes | length' "$CONFIG_JSON" 2>/dev/null)
+NO_CFG=0
 if [[ -z "$NODE_CNT" || "$NODE_CNT" == "null" || ! "$NODE_CNT" =~ ^[0-9]+$ || "$NODE_CNT" -lt 1 ]]; then
-  log "config.json 中未找到 Nodes 条目，跳过本轮"; exit 0
+  # 未安装 V2bX / 配置缺失: 仍上报一条心跳（服务状态会是 absent），避免节点在面板上消失
+  NO_CFG=1
+  NODE_CNT=1
+  log "未找到 config.json 或 Nodes 条目，按「服务未就绪」上报"
 fi
 
 # 基础名: 忽略历史污染值 unknown
@@ -179,19 +183,23 @@ DO_RESTART=0; DO_UPDATE=0; DO_UPDATE_VER=""; DO_AGENT_UPDATE=0
 WANT_WARP_I=""
 
 for ((i=0; i<NODE_CNT; i++)); do
-  NID=$(jq -r ".Nodes[$i].NodeID // empty" "$CONFIG_JSON" 2>/dev/null)
-  [[ -z "$NID" || "$NID" == "null" ]] && continue
-  CUR_HOST=$(jq -r ".Nodes[$i].ApiHost // empty" "$CONFIG_JSON" 2>/dev/null)
-  CUR_KEY=$(jq -r ".Nodes[$i].ApiKey // empty" "$CONFIG_JSON" 2>/dev/null)
-  LIP=$(jq -r ".Nodes[$i].ListenIP // empty" "$CONFIG_JSON" 2>/dev/null)
-  C_FILE=$(jq -r ".Nodes[$i].CertConfig.CertFile // empty" "$CONFIG_JSON" 2>/dev/null)
-  C_DOM=$(jq -r ".Nodes[$i].CertConfig.CertDomain // empty" "$CONFIG_JSON" 2>/dev/null)
-  NAME_I=$(node_name "$NID")
+  if [[ "$NO_CFG" == "1" ]]; then
+    NID=""; CUR_HOST=""; CUR_KEY=""; LIP=""; C_FILE=""; C_DOM=""
+  else
+    NID=$(jq -r ".Nodes[$i].NodeID // empty" "$CONFIG_JSON" 2>/dev/null)
+    [[ -z "$NID" || "$NID" == "null" ]] && continue
+    CUR_HOST=$(jq -r ".Nodes[$i].ApiHost // empty" "$CONFIG_JSON" 2>/dev/null)
+    CUR_KEY=$(jq -r ".Nodes[$i].ApiKey // empty" "$CONFIG_JSON" 2>/dev/null)
+    LIP=$(jq -r ".Nodes[$i].ListenIP // empty" "$CONFIG_JSON" 2>/dev/null)
+    C_FILE=$(jq -r ".Nodes[$i].CertConfig.CertFile // empty" "$CONFIG_JSON" 2>/dev/null)
+    C_DOM=$(jq -r ".Nodes[$i].CertConfig.CertDomain // empty" "$CONFIG_JSON" 2>/dev/null)
+  fi
+  if [[ "$NO_CFG" == "1" ]]; then NAME_I="$BASE_NAME"; else NAME_I=$(node_name "$NID"); fi
   CONNS_I=$(node_conns "$LIP")
   cert_probe "$C_FILE" "$C_DOM"
 
   # 该节点上一次重命名的确认（一次性上报，服务端据此迁移该节点记录）
-  MARK="/tmp/.v2bx-cloud-rename-applied-${NID}"
+  MARK="/tmp/.v2bx-cloud-rename-applied-${NID:-nocfg}"
   APPLIED_RENAME=""
   [[ -f "$MARK" ]] && APPLIED_RENAME=$(head -1 "$MARK" 2>/dev/null)
 
@@ -202,7 +210,7 @@ for ((i=0; i<NODE_CNT; i++)); do
     --arg agentVer "$AGENT_VER" --argjson certDays "${CERT_DAYS:-null}" \
     --arg cPath "$CERT_PATH" --arg cDomain "$CERT_DOMAIN" --arg cEnd "$CERT_END" \
     --argjson cDays "${CERT_DAYS:-null}" --argjson cSelf "${CERT_SELF:-false}" \
-    --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "$NID" \
+    --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "${NID:-0}" \
     --arg apiHost "$CUR_HOST" --arg apiKey "$CUR_KEY" --arg certDomain "$C_DOM" --arg cName "$NAME_I" \
     '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
       warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
@@ -218,7 +226,8 @@ for ((i=0; i<NODE_CNT; i++)); do
   HB_OK=1
   rm -f "$MARK"   # 重命名确认已上报
 
-  # ---- 期望配置（只作用于本 NodeID） ----
+  # ---- 期望配置（只作用于本 NodeID；服务未就绪模式跳过） ----
+  if [[ -n "$NID" ]]; then
   apply_node "$NID" ".ApiHost" "$(jq -r '.desired.ApiHost // empty' <<<"$RESP" 2>/dev/null)" "$CUR_HOST"
   apply_node "$NID" ".ApiKey"  "$(jq -r '.desired.ApiKey // empty'  <<<"$RESP" 2>/dev/null)" "$CUR_KEY"
 
@@ -270,6 +279,8 @@ for ((i=0; i<NODE_CNT; i++)); do
       log "node $NID: rename ${NAME_I} -> ${WANT_NAME}（下次心跳确认迁移）"
     fi
   fi
+
+  fi # 期望配置与重命名（需 NodeID）
 
   # ---- 动作与自更新（循环结束后统一执行一次） ----
   ACT=$(jq -r '.action // "none"' <<<"$RESP" 2>/dev/null)
