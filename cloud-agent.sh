@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="11"
+AGENT_VER="12"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -110,9 +110,17 @@ node_name() { # $1=NodeID → 输出该节点在云控上的名称
   else echo "$BASE_NAME"; fi
 }
 
-node_conns() { # $1=ListenIP → 该 IP 上的 443 已建立连接数（按节点区分，而非整机）
-  [[ -z "$1" ]] && { echo 0; return; }
-  ss -Htn state established 2>/dev/null | awk -v ip="$1" '$4 ~ ("^" ip ":") {n++} END{print n+0}'
+node_conns() { # $1=ListenIP → 该节点监听端口上的入站连接数（按节点区分，且排除本机外连）
+  local ip="$1" ports
+  [[ -z "$ip" ]] && { echo 0; return; }
+  # 该 IP 上正在监听的端口（ss 的列数在不同版本/过滤器下会变，故自适应取本地地址列）
+  ports=$(ss -ltnH 2>/dev/null | awk -v ip="$ip" '{lip=(NF>=5?$4:$3)} index(lip, ip ":")==1 {split(lip,a,":"); print a[2]}' \
+          | sort -u | paste -sd'|')
+  [[ -z "$ports" ]] && { echo 0; return; }
+  ss -Htn state established 2>/dev/null | awk -v ip="$ip" -v p="$ports" '
+    { lip = (NF >= 5 ? $4 : $3)
+      if (index(lip, ip ":") == 1) { split(lip, a, ":"); if (a[2] ~ ("^(" p ")$")) n++ } }
+    END { print n+0 }'
 }
 
 cert_probe() { # $1=CertFile $2=CertDomain → 设置 CERT_PATH/CERT_DOMAIN/CERT_END/CERT_DAYS/CERT_SELF
