@@ -702,6 +702,7 @@ function defaultTokenBlocked() {
 
 // 长轮询等待表: 节点身份键 -> { res, timer }（下发命令时立即唤醒，无需等下一轮心跳）
 const WAITERS = new Map();
+const lastWakeAt = new Map(); // 节点身份键 -> 上次立即唤醒时间（防空转）
 const WAIT_MS = 50000; // 单次挂起上限；节点侧 curl --max-time 58s，超时后自动重挂
 function waitForNode(key, res) {
   const prev = WAITERS.get(key); // 同一节点重复挂起（进程重启等）时先收掉旧连接
@@ -846,6 +847,18 @@ const handler = async (req, res) => {
       uptime_sec: body.uptime_sec || 0, warp: body.warp || 'unknown',
       svc: body.svc || '', cfg: body.cfg || {}, load: body.load || ''
     };
+    // 期望配置收敛判定: 节点上报的实际配置已与期望一致 → 清除「待应用」标记
+    // （agent 应用后不会主动回报 desired，由服务端比对上报值判定；否则徽章常亮、长轮询也会一直认为有任务）
+    if (rec.desired) {
+      const want = rec.desired, cur = rec.info.cfg || {};
+      const norm = (v) => String(v === undefined || v === null ? '' : v).trim();
+      const same = (k, actual) => !(k in want) || norm(want[k]) === norm(actual);
+      if (same('ApiHost', cur.ApiHost) && same('ApiKey', cur.ApiKey) && same('NodeID', cur.NodeID)
+          && same('CertDomain', cur.CertDomain) && same('Warp', rec.info.warp)) {
+        rec.desired = null;
+        addEvent(rec.name, 'desired', '期望配置已生效');
+      }
+    }
     // 服务健康告警: agent 在线但 V2bX 未运行/未安装（agent v8 起上报 svc）
     const svc = rec.info.svc;
     if (svc && svc !== 'active') {
@@ -949,7 +962,14 @@ const handler = async (req, res) => {
     const rec = data.nodes[key];
     const hasWork = !!(rec && (rec.desired || rec.pendingAction || (rec.pendingRename && rec.pendingRename.newName)));
     const hasAgentUpdate = !!(data.agentVersion && rec && String(rec.agentVer || '') !== String(data.agentVersion));
-    if (hasWork || hasAgentUpdate) return json(res, 200, { wake: 1 });
+    if (hasWork || hasAgentUpdate) {
+      // 同一节点 15s 内只立即唤醒一次：避免任务长期无法收敛（如 WARP 模板缺失）时守护进程空转
+      const now = Date.now();
+      if (now - (lastWakeAt.get(key) || 0) > 15000) {
+        lastWakeAt.set(key, now);
+        return json(res, 200, { wake: 1 });
+      }
+    }
     return waitForNode(key, res);
   }
 
