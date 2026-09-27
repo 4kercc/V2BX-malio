@@ -9,7 +9,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="7"
+AGENT_VER="8"
 
 [[ -f "$CONF" ]] || exit 0
 source "$CONF"
@@ -32,8 +32,32 @@ flock -n 9 || exit 0
 ############################################
 NAME="${NODE_NAME:-$(hostname)}"
 HOSTNAME="$(hostname 2>/dev/null)"
-VERSION=$(/usr/local/V2bX/V2bX version 2>/dev/null | grep -aoE 'V2bX [^ ]+' | head -1 | awk '{print $2}')
+# 二进制路径兼容: 标准安装/自定义路径/PATH 中查找
+V2BX_BIN=""
+for p in /usr/local/V2bX/V2bX /usr/local/bin/V2bX /usr/bin/V2bX; do
+  [[ -x "$p" ]] && { V2BX_BIN="$p"; break; }
+done
+[[ -z "$V2BX_BIN" ]] && V2BX_BIN="$(command -v V2bX 2>/dev/null || true)"
+VERSION=""
+[[ -n "$V2BX_BIN" ]] && VERSION=$("$V2BX_BIN" version 2>/dev/null | grep -aoE 'V2bX [^ ]+' | head -1 | awk '{print $2}')
+# 服务状态: 区分「agent 在线」与「V2bX 真的在跑」（云控盲区防护）
+if systemctl list-unit-files 2>/dev/null | grep -qE '^(V2bX|v2bx)\.service'; then
+  SVC="$(systemctl is-active V2bX 2>/dev/null)"
+  [[ -z "$SVC" ]] && SVC="$(systemctl is-active v2bx 2>/dev/null)"
+  [[ -z "$SVC" ]] && SVC="inactive"
+else
+  SVC="absent"
+fi
+if [[ "$SVC" != "active" ]] && { pgrep -x V2bX >/dev/null 2>&1 || pgrep -x v2bx >/dev/null 2>&1; }; then
+  SVC="active" # 非 systemd 安装时的进程兜底
+fi
 RSS_MB=$(systemctl show V2bX -p MemoryCurrent --value 2>/dev/null | awk '{printf "%d", $1/1024/1024}')
+if [[ -z "$RSS_MB" || "$RSS_MB" == "0" ]]; then
+  RSS_PID=$(pgrep -x V2bX 2>/dev/null | head -1)
+  [[ -z "$RSS_PID" ]] && RSS_PID=$(pgrep -x v2bx 2>/dev/null | head -1)
+  [[ -n "$RSS_PID" ]] && RSS_MB=$(awk '/VmRSS/{printf "%d", $2/1024}' /proc/"$RSS_PID"/status 2>/dev/null)
+fi
+RSS_MB=${RSS_MB:-0}
 CONNS=$(ss -tan state established 2>/dev/null | wc -l)
 # 服务运行时长（同为单调时钟: 开机秒数 - 服务启动单调时间）
 MONO_TS=$(systemctl show V2bX -p ActiveEnterTimestampMonotonic --value 2>/dev/null)
@@ -102,6 +126,7 @@ PAYLOAD=$(cat <<EOF
   "conns": ${CONNS:-0},
   "uptime_sec": ${SERVICE_UPTIME:-0},
   "warp": "${WARP}",
+  "svc": "${SVC}",
   "load": "${LOAD}",
   "ack": "${ACK}",
   "agentVer": "${AGENT_VER}",

@@ -266,7 +266,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  if(hf.dataset.sig!==hosts.join('|')){hf.dataset.sig=hosts.join('|');hf.innerHTML='<option value="">全部面板域名</option>'+hosts.map(h=>'<option value="'+h+'">'+h+'</option>').join('');hf.value=hosts.includes(curH)?curH:'';}
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
- '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'</td>'+
+ '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止'):'')+'</td>'+
  '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+'</td>'+
  '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
  '<td>'+n.ip+'</td>'+
@@ -281,7 +281,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
  '<div class="nrow"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止'):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
  (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+
  '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button></div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
@@ -289,6 +289,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
  '<span class="k">连接</span><span>'+(n.info.conns||0)+'</span>'+
  '<span class="k">WARP</span><span>'+(n.info.warp||'-')+'</span>'+
+ '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-')))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+((n.info.cfg&&n.info.cfg.ApiHost)||'-')+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
@@ -330,7 +331,7 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  const conns=(m.recent||[]).map(s=>({v:s.c}));
  const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
  showModal('📊 '+d.name+(d.group?' ['+d.group+']':''), [
-  'IP '+d.ip+' · 版本 '+(d.info.version||'-')+' · Agent v'+(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays),
+  'IP '+d.ip+' · 版本 '+(d.info.version||'-')+' · Agent v'+(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
   '<b>内存趋势（近 3 小时）</b>'+sparkline(recent,'hsl(217 91% 60%)'),
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
@@ -651,8 +652,22 @@ const handler = async (req, res) => {
       hostname: body.hostname || '', version: body.version || '',
       rss_mb: body.rss_mb || 0, conns: body.conns || 0,
       uptime_sec: body.uptime_sec || 0, warp: body.warp || 'unknown',
-      cfg: body.cfg || {}, load: body.load || ''
+      svc: body.svc || '', cfg: body.cfg || {}, load: body.load || ''
     };
+    // 服务健康告警: agent 在线但 V2bX 未运行/未安装（agent v8 起上报 svc）
+    const svc = rec.info.svc;
+    if (svc && svc !== 'active') {
+      if (rec.svcWarn !== svc) {
+        rec.svcWarn = svc;
+        const txt = svc === 'absent' ? 'V2bX 未安装（仅 agent 在线）' : 'V2bX 服务未运行（agent 在线）';
+        const ev = addEvent(rec.name, 'service', txt);
+        notify('🔴 [' + rec.name + '] ' + ev.text);
+      }
+    } else if (svc === 'active' && rec.svcWarn) {
+      rec.svcWarn = null;
+      const ev = addEvent(rec.name, 'service', 'V2bX 服务已恢复运行');
+      notify('🟢 [' + rec.name + '] ' + ev.text);
+    }
     // 恢复在线事件（此前被巡检标记为离线）
     if (rec.offlineNotified) {
       rec.offlineNotified = false;
