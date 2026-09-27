@@ -350,7 +350,7 @@ function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.te
 function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){show('请先勾选节点');return null;}return s;}
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
-async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f||!Object.keys(f).length){show('请至少填写一个字段');return;}
+async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
  if(d.error){show('被拒绝: '+d.error);return;}
  showModal('已写入期望配置到 '+d.applied+' 台节点', [
@@ -358,7 +358,7 @@ async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(
    '执行时机: 每台节点下一次心跳（≤2 分钟）',
    '执行规则: 与节点当前配置一致则跳过；有差异才修改并自动重启'
  ], '完成后「待下发」列清空即代表已应用；列表自动刷新');}
-async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){show('请至少填写一个字段');return;}
+async function sendDesiredAll(){const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:'all',fields:f});
  if(d.error){show('被拒绝: '+d.error);return;}
  showModal('已写入期望配置到全部 '+d.applied+' 台节点', [
