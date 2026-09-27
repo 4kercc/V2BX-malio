@@ -76,9 +76,6 @@ CUR_NAME=$(get_str Name)
 ############################################
 APPLY_RENAME_MARKER="/tmp/.v2bx-cloud-rename-applied"
 PENDING_RENAME_FILE="/etc/V2bX/.cloud_pending_rename"
-# 心跳成功后由服务端确认前：本机上一次已应用的改名（一次性上报 ack 用）
-APPLIED_RENAME=""
-[[ -f "$APPLY_RENAME_MARKER" ]] && APPLIED_RENAME=$(head -1 "$APPLY_RENAME_MARKER" 2>/dev/null)
 
 ############################################
 # 上报心跳并拉取期望配置
@@ -88,6 +85,12 @@ ACK=""
 if [[ -f /tmp/.v2bx-cloud-ack ]]; then
   ACK=$(head -1 /tmp/.v2bx-cloud-ack 2>/dev/null)
   rm -f /tmp/.v2bx-cloud-ack
+fi
+# 上一次重命名的应用确认（一次性上报: rename:旧名，服务端据此迁移数据）
+APPLIED_RENAME=""
+if [[ -f "$APPLY_RENAME_MARKER" ]]; then
+  APPLIED_RENAME=$(head -1 "$APPLY_RENAME_MARKER" 2>/dev/null)
+  rm -f "$APPLY_RENAME_MARKER"
 fi
 
 PAYLOAD=$(cat <<EOF

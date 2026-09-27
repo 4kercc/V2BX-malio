@@ -25,3 +25,8 @@ V2bX-linux-*
 node/1.key
 node/1.pem
 node/cert/
+
+# 云控运行时数据（备份/节点数据，不应入库）
+backups/
+cloud-data.json
+cloud-data.json.*

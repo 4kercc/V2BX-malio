@@ -222,12 +222,15 @@ function toggleTheme(){var t=document.documentElement.classList.contains('dark')
  localStorage.setItem('cloudTheme',t);applyTheme(t);}
 applyTheme(localStorage.getItem('cloudTheme')||'dark');
 
-const T=localStorage.getItem('cloudToken')||prompt('请输入管理 Token（服务端 cloud-data.json 里的 token 字段）');
-localStorage.setItem('cloudToken',T);
+let T=localStorage.getItem('cloudToken')||'';
 let NODES=[];
+let tokenAsked=false;
+function askToken(msg){if(tokenAsked)return;tokenAsked=true;
+ uiPrompt(msg||'请输入管理 Token（服务端 cloud-data.json 里的 token 字段）','',function(v){
+  tokenAsked=false;v=(v||'').trim();if(!v)return;T=v;localStorage.setItem('cloudToken',v);refresh();});}
 async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',headers:{'X-Token':T,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
  const j=await r.json().catch(()=>({}));
- if(r.status===401){alert('Token 错误');localStorage.removeItem('cloudToken');location.reload();return j;}
+ if(r.status===401){if(T){T='';localStorage.removeItem('cloudToken');show('Token 错误，请重新输入');}askToken();return j;}
  if(r.status===403){document.getElementById('msg').textContent=j.error||'被拒绝';}
  return j;}
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
@@ -264,7 +267,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'</td>'+
- '<td style="font-weight:500">'+(n.renaming?'<span title="重命名中 → '+n.renaming+'" style="opacity:.6">'+n.name+'</span> '+badge('b-info','✏ → '+n.renaming):'<a href="#" onclick="showNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'));return false" ondblclick="renameNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'),\''+n.name.replace(/'/g,"\\'")+'\');return false" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>')+'</td>'+
+ '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+'</td>'+
  '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
  '<td>'+n.ip+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',n.info.version):'-')+'</td>'+
@@ -276,11 +279,11 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
  '<td>'+fmtAct(n.action)+'</td></tr>').join('');
  document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
- '<div class="nrow"><div style="display:flex;align-items:center;gap:8px">'+
+ '<div class="nrow"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<b>'+n.name+'</b>'+(n.group?' '+badge('b-mut',n.group):'')+
- (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+
- '<button class="btn btn-ghost btn-sm" onclick="renameNode(decodeURIComponent(\''+encodeURIComponent(n.key)+'\'),\''+n.name.replace(/'/g,"\\'")+'\')">✏</button></div>'+fmtAct(n.action)+'</div>'+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
+ (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+
+ '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button></div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
@@ -314,11 +317,12 @@ function sparkline(series,color){if(!series||series.length<2)return '<div class=
  return '<svg viewBox="0 0 '+w+' '+h+'" style="width:100%;height:'+h+'px;background:hsl(var(--muted));border-radius:6px">'+
  '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="2"/></svg>';}
 function renameNode(keyEnc,cur){const key=decodeURIComponent(keyEnc);
- const nn=prompt('将节点重命名为（1-64 字符，不能含 | 或路径分隔符）:\n重命名会迁移全部历史数据（指标/事件/动作），约 2 分钟生效:',cur);
- if(!nn||nn===cur)return;
- api('/api/rename',{key,newName:nn.trim()}).then(d=>{
-  if(d.error){show('被拒绝: '+d.error);return;}
-  show('✓ 重命名已下发: '+cur+' → '+d.newName+'（等节点心跳应用，≤2 分钟）');});}
+ uiPrompt('重命名节点（1-64 字符，禁用 | 和路径分隔符；将迁移全部历史数据，约 2 分钟生效）',cur,function(v){
+  const nn=(v||'').trim();
+  if(!nn||nn===cur)return;
+  api('/api/rename',{key,newName:nn}).then(d=>{
+   if(d.error){show('被拒绝: '+d.error);return;}
+   show('✓ 重命名已下发: '+cur+' → '+d.newName+'（等节点心跳应用，≤2 分钟）');});});}
 async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  const d=await api('/api/node_detail?key='+encodeURIComponent(key));
  if(d.error){show('加载失败: '+d.error);return;}
@@ -342,10 +346,10 @@ async function setGroup(){const t=targets();if(!t)return;const g=document.getEle
  const d=await api('/api/groups',{targets:t,group:g});show(d.error?('被拒绝: '+d.error):('✓ 已将 '+d.applied+' 台节点分组设为 ['+(d.group||'无')+']'));}
 function scheduleRefresh(){if(pollTimer)clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(AUTO)refresh();scheduleRefresh();},pollMs());}
 function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');if(AUTO)refresh();}
-function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){alert('请先勾选节点');return null;}return s;}
+function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){show('请先勾选节点');return null;}return s;}
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
- if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){alert('NodeID 必须为数字');return null;}return f;}
-async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
+ if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
+async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f||!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
  if(d.error){show('被拒绝: '+d.error);return;}
  showModal('已写入期望配置到 '+d.applied+' 台节点', [
@@ -353,7 +357,7 @@ async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(
    '执行时机: 每台节点下一次心跳（≤2 分钟）',
    '执行规则: 与节点当前配置一致则跳过；有差异才修改并自动重启'
  ], '完成后「待下发」列清空即代表已应用；列表自动刷新');}
-async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){alert('请至少填写一个字段');return;}
+async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:'all',fields:f});
  if(d.error){show('被拒绝: '+d.error);return;}
  showModal('已写入期望配置到全部 '+d.applied+' 台节点', [
@@ -363,7 +367,7 @@ async function sendDesiredAll(){const f=gather();if(!f||!Object.keys(f).length){
  ], '完成后「待下发」列清空即代表已应用');}
 async function doAction(a){const t=targets();if(!t)return;
  const ver=document.getElementById('sUpdateVer').value.trim();
- if(!confirm(a==='update'?('确认升级选中节点？'+(ver?('（锁定版本 '+ver+'）'):'（最新版）')):'确认重启选中节点？'))return;
+ if(!await uiConfirmP(a==='update'?('确认升级选中节点？'+(ver?('（锁定版本 '+ver+'）'):'（最新版）')):'确认重启选中节点？'))return;
  const d=await api('/api/action',{targets:t,action:a});
  if(d.error){show('被拒绝: '+d.error);return;}
  const lines=a==='update'?[
@@ -392,8 +396,43 @@ function showModal(title,lines,foot){
  document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3><ul>'+lines.map(l=>'<li>'+l+'</li>').join('')+'</ul><div class="foot">'+foot+'</div><button class="btn btn-primary" id="modalOk" style="margin-top:12px">知道了</button>';
  document.getElementById('modalOk').onclick=function(){document.getElementById('modal').classList.remove('show');};
  document.getElementById('modal').classList.add('show');}
+// 页面内输入/确认弹窗：不依赖 prompt/confirm（内嵌浏览器不支持会直接抛错，导致功能失效）
+function uiPrompt(title,defVal,cb){
+ const esc=String(defVal==null?'':defVal).split('&').join('&amp;').split('"').join('&quot;');
+ document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3><input id="uiIn" style="width:100%;margin:10px 0" value="'+esc+'"><div class="foot">回车确认 · Esc 或「取消」放弃</div><div style="margin-top:12px;display:flex;gap:8px"><button class="btn btn-primary" id="uiOk">确认</button><button class="btn btn-ghost" id="uiCancel">取消</button></div>';
+ document.getElementById('modal').classList.add('show');
+ const inp=document.getElementById('uiIn');inp.focus();inp.select();
+ let done=false;
+ function finish(v){if(done)return;done=true;document.getElementById('modal').classList.remove('show');cb(v);}
+ document.getElementById('uiOk').onclick=function(){finish(inp.value);};
+ document.getElementById('uiCancel').onclick=function(){finish(null);};
+ inp.onkeydown=function(e){if(e.key==='Enter'){e.preventDefault();finish(inp.value);}else if(e.key==='Escape'){e.preventDefault();finish(null);}};}
+function uiConfirm(title,cb){
+ document.getElementById('modalBox').innerHTML='<h3>'+title+'</h3><div style="margin-top:12px;display:flex;gap:8px"><button class="btn btn-primary" id="uiOk">确认</button><button class="btn btn-ghost" id="uiCancel">取消</button></div>';
+ document.getElementById('modal').classList.add('show');
+ let done=false;
+ function finish(v){if(done)return;done=true;document.getElementById('modal').classList.remove('show');cb(v);}
+ document.getElementById('uiOk').onclick=function(){finish(true);};
+ document.getElementById('uiCancel').onclick=function(){finish(false);};}
+function uiConfirmP(title){return new Promise(function(r){uiConfirm(title,r);});}
 function show(m){document.getElementById('msg').textContent=m;setTimeout(refresh,800);}
 refresh();scheduleRefresh();
+// 事件委托: 名称单击=详情抽屉 / 双击=重命名 / ✏按钮=重命名（桌面表格+移动卡片共用，零内联转义）
+function wireNodeList(id){var el=document.getElementById(id);
+ if(!el||el.dataset.wired)return;el.dataset.wired='1';
+ var tmr=null; // 单击延迟 220ms：若期间发生双击则取消详情，避免弹窗叠加
+ el.addEventListener('click',function(e){
+  var a=e.target.closest('a.nlink');
+  if(a){e.preventDefault();if(tmr)clearTimeout(tmr);
+   var k=a.dataset.key;tmr=setTimeout(function(){tmr=null;showNode(k);},220);return;}
+  var b=e.target.closest('button.renbtn');
+  if(b){renameNode(b.dataset.key,decodeURIComponent(b.dataset.name));}});
+ el.addEventListener('dblclick',function(e){
+  var a=e.target.closest('a.nlink');
+  if(a){e.preventDefault();if(tmr){clearTimeout(tmr);tmr=null;}
+   renameNode(a.dataset.key,decodeURIComponent(a.dataset.name));}});}
+wireNodeList('tb');wireNodeList('mc');
+function toggleAll(cb){document.querySelectorAll('.sel').forEach(function(x){x.checked=cb.checked;});}
 </script>
 </body>
 </html>`;
@@ -871,6 +910,20 @@ const handler = async (req, res) => {
 
   json(res, 404, { error: 'not found' });
 };
+
+// ---------- 启动自检: UI 内联脚本必须能被浏览器解析 ----------
+// 模板字面量里的 \n 等转义会被 Node 提前消化，可能在页面字符串里留下裸换行，
+// 导致整段 UI JS 变成 SyntaxError（表现为"函数全部未定义"）。此处直接解析一次，坏了一律拒绝启动。
+(function selfCheckUI() {
+  const m = UI.match(/<script>([\s\S]*?)<\/script>/);
+  if (!m) { console.error('!! UI 自检失败: 未找到内联 <script> 块'); process.exit(1); }
+  try {
+    new Function(m[1]);
+  } catch (e) {
+    console.error('!! UI 内联脚本语法错误，拒绝启动: ' + e.message);
+    process.exit(1);
+  }
+})();
 
 // ---------- TLS 可选: 设置 TLS_CERT/TLS_KEY 环境变量后以 HTTPS 监听（自签证书场景） ----------
 const TLS_CERT = process.env.TLS_CERT || '';
