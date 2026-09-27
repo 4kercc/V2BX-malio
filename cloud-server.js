@@ -293,28 +293,53 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
  ], '指标每 2 分钟采集一次：近 3 小时明细 + 7 天降采样');}
-function certDaysHtml(d){if(d===null||d===undefined||d==='')return '<span class="muted">未上报</span>';
+function certDaysHtml(d){if(d===null||d===undefined||d==='')return '<span class="muted">未知</span>';
  if(d<=7)return '<b style="color:#f87171">'+d+' 天 · 紧急</b>';
  if(d<=14)return '<b style="color:#fbbf24">'+d+' 天 · 尽快续期</b>';
  if(d<=30)return '<b style="color:#60a5fa">'+d+' 天</b>';
  return '<b style="color:#4ade80">'+d+' 天</b>';}
-async function showCert(){
- const d=await api('/api/cert');
- const lines=[];
- if(d.error){lines.push(d.error);}
- else{
-  lines.push('<b>控制面板 HTTPS 证书</b>'+(d.selfSigned?'（自签）':'（正规证书）'));
-  lines.push('域名: '+d.cn+' · 签发: '+d.issuer);
-  lines.push('到期时间: '+new Date(d.validTo).toLocaleString()+' · 剩余 '+certDaysHtml(d.days));
-  lines.push('生效时间: '+new Date(d.validFrom).toLocaleString());
-  if(d.san)lines.push('<span class="small">SAN: '+d.san+'</span>');
-  lines.push('<span class="small">证书文件: '+d.path+'</span>');
+function fmtCertEnd(s){if(!s)return '-';const d=new Date(s);return isNaN(d.getTime())?s:d.toLocaleDateString();}
+function certLine(n,q){
+ const c=n.cert;
+ if(c&&c.checkedAt&&c.checkedAt>=q){
+  if(!c.path)return n.name+' — <span class="muted">未找到证书文件</span>';
+  return n.name+' — '+(c.domain||'-')+(c.selfSigned?' <span class="muted">(自签)</span>':'')+' · 到期 '+fmtCertEnd(c.end)+' · '+certDaysHtml(c.days);
  }
- const nc=NODES.filter(n=>n.certDays!==null&&n.certDays!==undefined).map(n=>({name:n.name,d:n.certDays})).sort((a,b)=>a.d-b.d);
- lines.push('<b>节点证书剩余天数（'+nc.length+'/'+NODES.length+' 台已上报）</b>');
- if(!nc.length)lines.push('<span class="muted">暂无节点上报证书信息（agent 上报 CertDomain 后显示）</span>');
- else nc.slice(0,15).forEach(x=>lines.push(x.name+' — '+certDaysHtml(x.d)));
- showModal('🔐 证书到期时间',lines,'面板证书由服务器上的 acme.sh 自动续期；节点证书由各节点 agent 每 2 分钟上报（证书剩余 ≤21 天会触发告警）');
+ if(c&&c.path)return n.name+' — '+(c.domain||'-')+' · '+certDaysHtml(c.days)+' <span class="muted">(上次结果)</span>';
+ if(n.certDays!==null&&n.certDays!==undefined)return n.name+' — 剩余 '+certDaysHtml(n.certDays)+' <span class="muted">(agent 待升级，无详情)</span>';
+ if(!n.agentVer)return n.name+' — <span class="muted">agent 版本过旧，未上报证书（重跑对接脚本即可升级）</span>';
+ return n.name+' — <span class="muted">查询中…</span>';}
+function renderCertModal(list,q,all,panelCert){
+ const ul=document.getElementById('certList');if(!ul)return true;
+ const sel=NODES.filter(n=>list.indexOf(n.key)>=0);
+ ul.innerHTML=sel.map(n=>'<li>'+certLine(n,q)+'</li>').join('');
+ const pending=sel.filter(n=>!(n.cert&&n.cert.checkedAt>=q)).length;
+ const foot=document.getElementById('certFoot');
+ if(foot){
+  const pc=panelCert&&!panelCert.error?('控制面板证书 '+panelCert.cn+'：剩余 '+panelCert.days+' 天'):'';
+  foot.innerHTML=(all?'未勾选节点，已查询全部 ':'已查询 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回报…'):'✓ 全部已回报')
+   +'<br>节点证书由各节点 agent 就地读取（自签 / ACME / 自定义 CertFile 均支持）；剩余 ≤21 天自动告警'
+   +(pc?('<br>'+pc):'');
+ }
+ return pending===0;}
+async function showCert(){
+ const keys=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));
+ const all=keys.length===0;
+ const list=all?NODES.map(n=>n.key):keys;
+ if(!list.length){show('暂无节点');return;}
+ const d=await api('/api/cert_query',{targets:list});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ const q=d.queryAt||Date.now();
+ const pc=await api('/api/cert').catch(function(){return null;});
+ document.getElementById('modalBox').innerHTML='<h3>🔐 节点证书到期时间</h3><ul id="certList"></ul><div class="foot" id="certFoot"></div><button class="btn btn-primary" id="modalOk" style="margin-top:12px">知道了</button>';
+ document.getElementById('modalOk').onclick=closeModal;
+ document.getElementById('modal').classList.add('show');
+ renderCertModal(list,q,all,pc);
+ for(let i=0;i<8;i++){ // 轮询等节点回报（长轮询已即时唤醒，通常 1~3 秒）
+  await new Promise(function(r){setTimeout(r,1500);});
+  await refresh();
+  if(renderCertModal(list,q,all,pc))break;
+ }
 }
 async function showAudit(){const d=await api('/api/audit');
  const aud=(d.audit||[]).map(a=>'<li><span class="muted">'+new Date(a.t).toLocaleString()+'</span> — <b>'+a.act+'</b> '+a.detail+'</li>').join('');
@@ -883,6 +908,17 @@ const handler = async (req, res) => {
     pushMetrics(rec, rec.info.rss_mb, rec.info.conns);
     // agent 版本 + 证书剩余天数
     rec.agentVer = String(body.agentVer || '');
+    // 证书详情（agent v9+）: 一键查询的返回落库，并清除待查询标记
+    if (body.cert && typeof body.cert === 'object') {
+      const cd = body.cert.days === null || body.cert.days === undefined || body.cert.days === '' ? NaN : Number(body.cert.days);
+      rec.cert = {
+        path: String(body.cert.path || ''), domain: String(body.cert.domain || ''),
+        end: String(body.cert.end || ''), days: Number.isFinite(cd) ? cd : null,
+        selfSigned: !!body.cert.selfSigned, checkedAt: Date.now()
+      };
+      if (Number.isFinite(cd)) rec.certDays = cd;
+      if (rec.certQuery) rec.certQuery = null;
+    }
     if (body.certDays !== undefined && body.certDays !== null && body.certDays !== '') {
       const cd = Number(body.certDays);
       if (Number.isFinite(cd)) {
@@ -960,7 +996,7 @@ const handler = async (req, res) => {
     const body = await readBody(req);
     const key = String(body.name || 'unknown').slice(0, 64) + '|' + ip;
     const rec = data.nodes[key];
-    const hasWork = !!(rec && (rec.desired || rec.pendingAction || (rec.pendingRename && rec.pendingRename.newName)));
+    const hasWork = !!(rec && (rec.desired || rec.pendingAction || rec.certQuery || (rec.pendingRename && rec.pendingRename.newName)));
     const hasAgentUpdate = !!(data.agentVersion && rec && String(rec.agentVer || '') !== String(data.agentVersion));
     if (hasWork || hasAgentUpdate) {
       // 同一节点 15s 内只立即唤醒一次：避免任务长期无法收敛（如 WARP 模板缺失）时守护进程空转
@@ -1033,7 +1069,8 @@ const handler = async (req, res) => {
       group: n.group || '', certDays: (n.certDays === undefined ? null : n.certDays),
       agentVer: n.agentVer || '',
       renaming: n.pendingRename ? n.pendingRename.newName : null,
-      desired: n.desired || null, action: effAction(n)
+      desired: n.desired || null, action: effAction(n),
+      cert: n.cert || null, certQuery: n.certQuery || null
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, {
       token: data.token, nodeToken: data.nodeToken, updateVersion: data.updateVersion,
@@ -1090,6 +1127,19 @@ const handler = async (req, res) => {
     saveData(data);
     flushNode(key); // 立即唤醒该节点的长轮询，秒级应用
     return json(res, 200, { ok: true, newName });
+  }
+
+  // 一键查询选中节点的证书到期时间（写入待查询标记 → 长轮询即时唤醒 → 节点回报 cert 详情）
+  if (url === '/api/cert_query' && req.method === 'POST') {
+    const body = await readBody(req);
+    const hit = [];
+    for (const [key, n] of Object.entries(data.nodes)) {
+      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.certQuery = Date.now(); hit.push(key); }
+    }
+    audit('cert-query', '一键查询 ' + hit.length + ' 台节点的证书到期时间');
+    saveData(data);
+    flushWaiters(hit); // 秒级唤醒，无需等下一轮心跳
+    return json(res, 200, { ok: true, queried: hit.length, queryAt: Date.now() });
   }
 
   if (url === '/api/desired' && req.method === 'POST') {

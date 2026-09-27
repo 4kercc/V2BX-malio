@@ -9,7 +9,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="8"
+AGENT_VER="9"
 
 [[ -f "$CONF" ]] || exit 0
 source "$CONF"
@@ -76,13 +76,37 @@ else
   WARP="none"
 fi
 
-# 证书剩余天数（取配置里的 CertFile）
-CERT_DAYS=""
+# 证书探测（多路径 + 按域名匹配兜底，兼容自签 / ACME / 自定义 CertFile）
+CERT_DAYS=""; CERT_PATH=""; CERT_DOMAIN=""; CERT_END=""; CERT_SELF="false"
 CERT_FILE=$(grep -oP '"CertFile"\s*:\s*"\K[^"]+' "$CONFIG_JSON" 2>/dev/null | head -1)
-if [[ -n "$CERT_FILE" && -f "$CERT_FILE" ]] && command -v openssl >/dev/null; then
-  CERT_END=$(openssl x509 -enddate -noout -in "$CERT_FILE" 2>/dev/null | cut -d= -f2)
+DOM_HINT=$(grep -oP '"CertDomain"\s*:\s*"\K[^"]+' "$CONFIG_JSON" 2>/dev/null | head -1)
+[[ -z "$DOM_HINT" && -n "$CERT_FILE" ]] && DOM_HINT=$(basename "$CERT_FILE" | sed -E 's/\.(crt|pem|cer)$//')
+CAND=()
+[[ -n "$CERT_FILE" ]] && CAND+=("$CERT_FILE")
+if [[ -n "$DOM_HINT" ]]; then
+  CAND+=("/etc/ssl/${DOM_HINT}.crt" "/etc/ssl/certs/${DOM_HINT}.crt" \
+         "/etc/V2bX/cert/${DOM_HINT}.crt" "/etc/V2bX/certs/${DOM_HINT}.crt" "/etc/V2bX/${DOM_HINT}.crt" \
+         "/root/cert/${DOM_HINT}.crt" "/etc/letsencrypt/live/${DOM_HINT}/fullchain.pem" \
+         "/root/.acme.sh/${DOM_HINT}_ecc/fullchain.cer" "/root/.acme.sh/${DOM_HINT}/fullchain.cer")
+fi
+for f in "${CAND[@]}"; do [[ -n "$f" && -f "$f" ]] && { CERT_PATH="$f"; break; }; done
+# 兜底: 在常见目录里找 CN/SAN 命中本节点域名的证书（最多扫 40 个文件）
+if [[ -z "$CERT_PATH" && -n "$DOM_HINT" ]] && command -v openssl >/dev/null; then
+  while IFS= read -r f; do
+    if openssl x509 -in "$f" -noout -subject -ext subjectAltName 2>/dev/null | grep -qF "$DOM_HINT"; then
+      CERT_PATH="$f"; break
+    fi
+  done < <(find /etc/ssl /etc/V2bX /root/cert /root/.acme.sh -maxdepth 3 -type f \
+             \( -name '*.crt' -o -name '*.pem' -o -name 'fullchain.cer' \) 2>/dev/null | head -40)
+fi
+if [[ -n "$CERT_PATH" ]] && command -v openssl >/dev/null; then
+  CERT_END=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
   if [[ -n "$CERT_END" ]]; then
     CERT_DAYS=$(( ( $(date -d "$CERT_END" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+    CERT_CN=$(openssl x509 -in "$CERT_PATH" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p' | head -1)
+    CERT_ISS=$(openssl x509 -in "$CERT_PATH" -noout -issuer 2>/dev/null | sed -n 's/.*CN *= *//p' | head -1)
+    CERT_DOMAIN="${CERT_CN:-$DOM_HINT}"
+    [[ -n "$CERT_CN" && "$CERT_CN" == "$CERT_ISS" ]] && CERT_SELF="true"
   fi
 fi
 
@@ -131,6 +155,7 @@ PAYLOAD=$(cat <<EOF
   "ack": "${ACK}",
   "agentVer": "${AGENT_VER}",
   "certDays": ${CERT_DAYS:-null},
+  "cert": {"path": "${CERT_PATH}", "domain": "${CERT_DOMAIN}", "end": "${CERT_END}", "days": ${CERT_DAYS:-null}, "selfSigned": ${CERT_SELF}},
   "appliedRename": "${APPLIED_RENAME}",
   "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}","Name":"${CUR_NAME}"}
 }

@@ -1,0 +1,3 @@
+*.sh text eol=lf
+cloud-server.js text eol=lf
+cloud-agent.sh text eol=lf
