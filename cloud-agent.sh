@@ -9,7 +9,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="9"
+AGENT_VER="10"
 
 [[ -f "$CONF" ]] || exit 0
 source "$CONF"
@@ -103,7 +103,7 @@ if [[ -n "$CERT_PATH" ]] && command -v openssl >/dev/null; then
   CERT_END=$(openssl x509 -enddate -noout -in "$CERT_PATH" 2>/dev/null | cut -d= -f2)
   if [[ -n "$CERT_END" ]]; then
     CERT_DAYS=$(( ( $(date -d "$CERT_END" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
-    CERT_CN=$(openssl x509 -in "$CERT_PATH" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p' | head -1)
+    CERT_CN=$(openssl x509 -in "$CERT_PATH" -noout -subject 2>/dev/null | sed -n 's/.*CN *= *//p' | head -1 | tr -d '"')
     CERT_ISS=$(openssl x509 -in "$CERT_PATH" -noout -issuer 2>/dev/null | sed -n 's/.*CN *= *//p' | head -1)
     CERT_DOMAIN="${CERT_CN:-$DOM_HINT}"
     [[ -n "$CERT_CN" && "$CERT_CN" == "$CERT_ISS" ]] && CERT_SELF="true"
@@ -141,26 +141,23 @@ if [[ -f "$APPLY_RENAME_MARKER" ]]; then
   rm -f "$APPLY_RENAME_MARKER"
 fi
 
-PAYLOAD=$(cat <<EOF
-{
-  "name": "${NAME}",
-  "hostname": "${HOSTNAME}",
-  "version": "${VERSION}",
-  "rss_mb": ${RSS_MB:-0},
-  "conns": ${CONNS:-0},
-  "uptime_sec": ${SERVICE_UPTIME:-0},
-  "warp": "${WARP}",
-  "svc": "${SVC}",
-  "load": "${LOAD}",
-  "ack": "${ACK}",
-  "agentVer": "${AGENT_VER}",
-  "certDays": ${CERT_DAYS:-null},
-  "cert": {"path": "${CERT_PATH}", "domain": "${CERT_DOMAIN}", "end": "${CERT_END}", "days": ${CERT_DAYS:-null}, "selfSigned": ${CERT_SELF}},
-  "appliedRename": "${APPLIED_RENAME}",
-  "cfg": {"ApiHost":"${CUR_HOST}","ApiKey":"${CUR_KEY}","NodeID":${CUR_ID:-0},"CertDomain":"${CUR_DOMAIN}","Name":"${CUR_NAME}"}
-}
-EOF
-)
+# 心跳报文用 jq 构建：任何字段含引号/分号/换行都能正确转义（手写 JSON 曾因证书 CN 带引号导致整包非法）
+PAYLOAD=$(jq -n \
+  --arg name "${NAME}" --arg hostname "${HOSTNAME}" --arg version "${VERSION}" \
+  --argjson rss "${RSS_MB:-0}" --argjson conns "${CONNS:-0}" --argjson uptime "${SERVICE_UPTIME:-0}" \
+  --arg warp "${WARP}" --arg svc "${SVC}" --arg load "${LOAD}" --arg ack "${ACK}" \
+  --arg agentVer "${AGENT_VER}" --argjson certDays "${CERT_DAYS:-null}" \
+  --arg cPath "${CERT_PATH}" --arg cDomain "${CERT_DOMAIN}" --arg cEnd "${CERT_END}" \
+  --argjson cDays "${CERT_DAYS:-null}" --argjson cSelf "${CERT_SELF:-false}" \
+  --arg appliedRename "${APPLIED_RENAME}" \
+  --arg apiHost "${CUR_HOST}" --arg apiKey "${CUR_KEY}" --argjson nodeId "${CUR_ID:-0}" \
+  --arg certDomain "${CUR_DOMAIN}" --arg cName "${CUR_NAME}" \
+  '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
+    warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
+    cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf},
+    appliedRename:$appliedRename,
+    cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName}}' 2>/dev/null)
+[[ -n "$PAYLOAD" ]] || { log "payload 构建失败(jq)"; exit 0; }
 
 RESP=$(curl $CURL_TLS -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
   -H "X-Token: $CLOUD_TOKEN" -H "Content-Type: application/json" \
@@ -294,7 +291,7 @@ AGENT_UPDATE=$(echo "$RESP" | jq -r ".agentUpdate // \"0\"" 2>/dev/null)
 if [[ "$AGENT_UPDATE" == "1" ]]; then
   log "agent: self-update to server version"
   curl $CURL_TLS -fsSL -o /usr/local/V2bX/cloud-agent.sh.new \
-    "https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh?cb=$(date +%s%N)" 2>/dev/null
+    "https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh" 2>/dev/null
   if [[ -s /usr/local/V2bX/cloud-agent.sh.new ]] \
      && bash -n /usr/local/V2bX/cloud-agent.sh.new 2>/dev/null \
      && grep -q 'AGENT_VER' /usr/local/V2bX/cloud-agent.sh.new; then
