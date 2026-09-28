@@ -1084,7 +1084,8 @@ const handler = async (req, res) => {
       const norm = (v) => String(v === undefined || v === null ? '' : v).trim();
       const same = (k, actual) => !(k in want) || norm(want[k]) === norm(actual);
       if (same('ApiHost', cur.ApiHost) && same('ApiKey', cur.ApiKey) && same('NodeID', cur.NodeID)
-          && same('CertDomain', cur.CertDomain) && same('Warp', rec.info.warp)) {
+          && same('CertDomain', cur.CertDomain) && same('Warp', rec.info.warp)
+          && same('NodeType', cur.NodeType)) { // 注意: 所有可下发字段都必须参与判定，漏一个会导致下发被提前清空
         rec.desired = null;
         addEvent(rec.name, 'desired', '期望配置已生效');
       }
