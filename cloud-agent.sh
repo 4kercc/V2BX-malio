@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="13"
+AGENT_VER="14"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -232,6 +232,11 @@ for ((i=0; i<NODE_CNT; i++)); do
   apply_node "$NID" ".ApiKey"  "$(jq -r '.desired.ApiKey // empty'  <<<"$RESP" 2>/dev/null)" "$CUR_KEY"
 
   WANT_DOM=$(jq -r '.desired.CertDomain // empty' <<<"$RESP" 2>/dev/null)
+  # 安全: 只接受标准域名，避免值进入 openssl/路径/sed 流程时被注入
+  if [[ -n "$WANT_DOM" && ! "$WANT_DOM" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]]; then
+    log "node $NID: CertDomain 含非法字符，已忽略: $WANT_DOM"
+    WANT_DOM=""
+  fi
   if [[ -n "$WANT_DOM" && "$WANT_DOM" != "$C_DOM" ]]; then
     if [[ ! -f "/etc/ssl/${WANT_DOM}.crt" || ! -f "/etc/ssl/${WANT_DOM}.key" ]]; then
       mkdir -p /etc/ssl
@@ -267,8 +272,16 @@ for ((i=0; i<NODE_CNT; i++)); do
   # ---- 重命名（按 NodeID 记入 cloud.conf，下次心跳生效） ----
   WANT_NAME=$(jq -r '.desiredName // empty' <<<"$RESP" 2>/dev/null)
   if [[ -n "$WANT_NAME" && "$WANT_NAME" != "$NAME_I" ]]; then
-    if [[ "$WANT_NAME" =~ [|] || ${#WANT_NAME} -gt 64 ]]; then
-      log "node $NID: 非法名称，跳过: $WANT_NAME"
+    # 安全: 该名称会写入 cloud.conf（sed/echo），先挡掉 shell 元字符与换行
+    case "$WANT_NAME" in
+      *'"'*|*"'"*|*'`'*|*'$'*|*';'*|*'&'*|*'('*|*')'*|*'<'*|*'>'*|*'\'*|*'|'*|*$'\n'*|*$'\r'*)
+        log "node $NID: 名称含 shell 元字符，已拒绝: $WANT_NAME"
+        WANT_NAME="" ;;
+    esac
+  fi
+  if [[ -n "$WANT_NAME" && "$WANT_NAME" != "$NAME_I" ]]; then
+    if [[ ${#WANT_NAME} -gt 64 ]]; then
+      log "node $NID: 名称超长，跳过"
     else
       if grep -q "^NAME_${NID}=" "$CONF" 2>/dev/null; then
         sed -i "s|^NAME_${NID}=.*|NAME_${NID}=\"${WANT_NAME}\"|" "$CONF"
@@ -288,6 +301,11 @@ for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$ACT" == "update" ]]; then
     DO_UPDATE=1
     DO_UPDATE_VER=$(jq -r '.version // empty' <<<"$RESP" 2>/dev/null)
+    # 安全: 版本号会作为参数传给 v2bx update，只接受 vX.Y.Z 形式
+    if [[ -n "$DO_UPDATE_VER" && ! "$DO_UPDATE_VER" =~ ^v[0-9][A-Za-z0-9._-]*$ ]]; then
+      log "node $NID: 版本号非法，回退为最新版: $DO_UPDATE_VER"
+      DO_UPDATE_VER=""
+    fi
   fi
   [[ "$(jq -r '.agentUpdate // "0"' <<<"$RESP" 2>/dev/null)" == "1" ]] && DO_AGENT_UPDATE=1
 done

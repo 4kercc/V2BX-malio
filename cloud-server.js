@@ -200,12 +200,15 @@ async function api(p,body){const r=await fetch(p,{method:body?'POST':'GET',heade
 function logout(){fetch('/api/logout',{method:'POST',credentials:'same-origin'}).catch(function(){}).then(function(){location.href='/login';});}
 function fmtTime(ts){const s=(Date.now()-ts)/1000;if(s<60)return Math.floor(s)+'秒前';if(s<3600)return Math.floor(s/60)+'分钟前';return Math.floor(s/3600)+'小时前';}
 function badge(cls,txt){return '<span class="badge '+cls+'">'+txt+'</span>';}
+// HTML 转义: 节点上报的字段(名称/版本/证书域名等)不可信，进 HTML 前一律转义，杜绝存储型 XSS
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 function fmtAct(a){if(!a)return badge('b-mut','-');
  const t=fmtTime(a.queuedAt);
- if(a.status==='queued')return badge('b-warn','⏳ 排队中')+(a.queuedOffline?'<div class="small" style="color:hsl(var(--bad))">节点离线，上线后执行</div>':'<div class="small">'+a.type+' · '+t+'</div>');
- if(a.status==='stuck-offline')return badge('b-bad','⚠️ 节点离线')+'<div class="small">'+a.type+' 已下发未确认 · '+t+'</div>';
- if(a.status==='unconfirmed')return badge('b-bad','⚠️ 未确认')+'<div class="small">'+a.type+' 心跳异常 · '+t+'</div>';
- if(a.status==='done')return badge('b-ok','✅ 已完成')+(a.inferred?' <span class="small">(推断)</span>':'')+'<div class="small">'+a.type+(a.version?' '+a.version:'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</div>';
+ const ty=esc(a.type);
+ if(a.status==='queued')return badge('b-warn','⏳ 排队中')+(a.queuedOffline?'<div class="small" style="color:hsl(var(--bad))">节点离线，上线后执行</div>':'<div class="small">'+ty+' · '+t+'</div>');
+ if(a.status==='stuck-offline')return badge('b-bad','⚠️ 节点离线')+'<div class="small">'+ty+' 已下发未确认 · '+t+'</div>';
+ if(a.status==='unconfirmed')return badge('b-bad','⚠️ 未确认')+'<div class="small">'+ty+' 心跳异常 · '+t+'</div>';
+ if(a.status==='done')return badge('b-ok','✅ 已完成')+(a.inferred?' <span class="small">(推断)</span>':'')+'<div class="small">'+ty+(a.version?' '+esc(a.version):'')+' · '+fmtTime(a.completedAt||a.queuedAt)+'</div>';
  if(a.status==='delivered')return badge('b-info','🔄 已下发')+'<div class="small">等节点心跳执行 · '+t+'</div>';
  return badge('b-mut','-');}
 function fmtCert(d){if(d===null||d===undefined)return badge('b-mut','-');
@@ -264,12 +267,12 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
- '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+n.name+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+'</td>'+
- '<td>'+(n.group?badge('b-mut',n.group):'-')+'</td>'+
- '<td>'+n.ip+'</td>'+
- '<td>'+(n.info.version?badge('b-mut',n.info.version):'-')+'</td>'+
+ '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+'</td>'+
+ '<td>'+(n.group?badge('b-mut',esc(n.group)):'-')+'</td>'+
+ '<td class="small">'+esc(n.ip)+'</td>'+
+ '<td>'+(n.info.version?badge('b-mut',esc(n.info.version)):'-')+'</td>'+
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
- '<td>'+(n.info.warp||'-')+'</td>'+
+ '<td>'+esc(n.info.warp||'-')+'</td>'+
  '<td>'+fmtCert(n.certDays)+'</td>'+
  '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b></div></td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
@@ -278,20 +281,20 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('mc').innerHTML=list.map(n=>'<div class="ncard">'+
  '<div class="nrow"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0">'+
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
- (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+n.name+'</a>'+(n.group?' '+badge('b-mut',n.group):'')+
+ (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+esc(n.name)+'</a>'+(n.group?' '+badge('b-mut',esc(n.group)):'')+
  (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+
  '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button></div>'+fmtAct(n.action)+'</div>'+
- '<div class="ngrid"><span class="k">IP</span><span>'+n.ip+'</span>'+
+ '<div class="ngrid"><span class="k">IP</span><span>'+esc(n.ip)+'</span>'+
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
  '<span class="k">连接</span><span>'+(n.info.conns||0)+'</span>'+
- '<span class="k">WARP</span><span>'+(n.info.warp||'-')+'</span>'+
+ '<span class="k">WARP</span><span>'+esc(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-'):'-'))+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
- (n.desired?'<div class="small" style="margin-top:6px">待下发: '+JSON.stringify(n.desired)+'</div>':'')+
+ (n.desired?'<div class="small" style="margin-top:6px">待下发: '+esc(JSON.stringify(n.desired))+'</div>':'')+
  '</div>').join('');
  document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
  const all=[...document.querySelectorAll('.sel')];
@@ -328,9 +331,9 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  if(d.error){show('加载失败: '+d.error);return;}
  const m=d.metrics||{};const recent=(m.recent||[]).map(s=>({v:s.rss}));
  const conns=(m.recent||[]).map(s=>({v:s.c}));
- const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
- showModal('📊 '+d.name+(d.group?' ['+d.group+']':''), [
-  'IP '+d.ip+' · 版本 '+(d.info.version||'-')+' · Agent v'+(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
+ const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+esc(e.text)+'</li>').join('');
+ showModal('📊 '+esc(d.name)+(d.group?' ['+esc(d.group)+']':''), [
+  'IP '+esc(d.ip)+' · 版本 '+esc(d.info.version||'-')+' · Agent v'+esc(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
   '<b>内存趋势（近 3 小时）</b>'+sparkline(recent,'hsl(217 91% 60%)'),
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
@@ -344,13 +347,13 @@ function fmtCertEnd(s){if(!s)return '-';const d=new Date(s);return isNaN(d.getTi
 function certLine(n,q){
  const c=n.cert;
  if(c&&c.checkedAt&&c.checkedAt>=q){
-  if(!c.path)return n.name+' — <span class="muted">未找到证书文件</span>';
-  return n.name+' — '+(c.domain||'-')+(c.selfSigned?' <span class="muted">(自签)</span>':'')+' · 到期 '+fmtCertEnd(c.end)+' · '+certDaysHtml(c.days);
+  if(!c.path)return esc(n.name)+' — <span class="muted">未找到证书文件</span>';
+  return esc(n.name)+' — '+esc(c.domain||'-')+(c.selfSigned?' <span class="muted">(自签)</span>':'')+' · 到期 '+esc(fmtCertEnd(c.end))+' · '+certDaysHtml(c.days);
  }
- if(c&&c.path)return n.name+' — '+(c.domain||'-')+' · '+certDaysHtml(c.days)+' <span class="muted">(上次结果)</span>';
- if(n.certDays!==null&&n.certDays!==undefined)return n.name+' — 剩余 '+certDaysHtml(n.certDays)+' <span class="muted">(agent 待升级，无详情)</span>';
- if(!n.agentVer)return n.name+' — <span class="muted">agent 版本过旧，未上报证书（重跑对接脚本即可升级）</span>';
- return n.name+' — <span class="muted">查询中…</span>';}
+ if(c&&c.path)return esc(n.name)+' — '+esc(c.domain||'-')+' · '+certDaysHtml(c.days)+' <span class="muted">(上次结果)</span>';
+ if(n.certDays!==null&&n.certDays!==undefined)return esc(n.name)+' — 剩余 '+certDaysHtml(n.certDays)+' <span class="muted">(agent 待升级，无详情)</span>';
+ if(!n.agentVer)return esc(n.name)+' — <span class="muted">agent 版本过旧，未上报证书（重跑对接脚本即可升级）</span>';
+ return esc(n.name)+' — <span class="muted">查询中…</span>';}
 function renderCertModal(list,q,all,panelCert){
  const ul=document.getElementById('certList');if(!ul)return true;
  const sel=NODES.filter(n=>list.indexOf(n.key)>=0);
@@ -358,7 +361,7 @@ function renderCertModal(list,q,all,panelCert){
  const pending=sel.filter(n=>!(n.cert&&n.cert.checkedAt>=q)).length;
  const foot=document.getElementById('certFoot');
  if(foot){
-  const pc=panelCert&&!panelCert.error?('控制面板证书 '+panelCert.cn+'：剩余 '+panelCert.days+' 天'):'';
+  const pc=panelCert&&!panelCert.error?('控制面板证书 '+esc(panelCert.cn)+'：剩余 '+panelCert.days+' 天'):'';
   foot.innerHTML=(all?'未勾选节点，已查询全部 ':'已查询 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回报…'):'✓ 全部已回报')
    +'<br>节点证书由各节点 agent 就地读取（自签 / ACME / 自定义 CertFile 均支持）；剩余 ≤21 天自动告警'
    +(pc?('<br>'+pc):'');
@@ -384,8 +387,8 @@ async function showCert(){
  }
 }
 async function showAudit(){const d=await api('/api/audit');
- const aud=(d.audit||[]).map(a=>'<li><span class="muted">'+new Date(a.t).toLocaleString()+'</span> — <b>'+a.act+'</b> '+a.detail+'</li>').join('');
- const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+e.text+'</li>').join('');
+ const aud=(d.audit||[]).map(a=>'<li><span class="muted">'+new Date(a.t).toLocaleString()+'</span> — <b>'+esc(a.act)+'</b> '+esc(a.detail)+'</li>').join('');
+ const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+esc(e.text)+'</li>').join('');
  showModal('📜 审计与事件', [
   '<b>管理操作审计</b>'+(aud?'<ul style="margin:4px 0">'+aud+'</ul>':'<div class="muted">暂无</div>'),
   '<b>节点事件</b>'+(evs?'<ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无</div>')
@@ -778,6 +781,7 @@ function defaultTokenBlocked() {
 const WAITERS = new Map();
 const lastWakeAt = new Map(); // 节点身份键 -> 上次立即唤醒时间（防空转）
 const WAIT_MS = 50000; // 单次挂起上限；节点侧 curl --max-time 58s，超时后自动重挂
+const WAITERS_MAX = 500; // 容量上限：防止异常客户端撑爆内存（满载时立即返回，节点按退避重试）
 function waitForNode(key, res) {
   const prev = WAITERS.get(key); // 同一节点重复挂起（进程重启等）时先收掉旧连接
   if (prev) {
@@ -909,7 +913,7 @@ const handler = async (req, res) => {
         + ' bytes=' + raw.length + (parseErr ? (' parseErr=' + parseErr) : '')
         + ' raw=' + raw.slice(0, 700).replace(/\s+/g, ' '));
     }
-    const rawName = String(body.name || '').trim();
+    const rawName = String(body.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
     const name = (rawName || 'unknown').slice(0, 64);
     // 空名称心跳: 正常 agent 一定带 NODE_NAME，出现说明该节点有旧版/残留脚本（会导致重复记录）
     if (!rawName && rateLimit('noname:' + ip, 1, 30 * 60 * 1000)) {
@@ -1110,6 +1114,7 @@ const handler = async (req, res) => {
         return json(res, 200, { wake: 1 });
       }
     }
+    if (WAITERS.size >= WAITERS_MAX) return json(res, 200, { wake: 0, busy: 1 });
     return waitForNode(key, res);
   }
 
@@ -1222,6 +1227,10 @@ const handler = async (req, res) => {
     if (!newName || newName.length > 64) return json(res, 400, { error: '名称长度需为 1-64 字符' });
     if (/[|]/.test(newName)) return json(res, 400, { error: '名称不能包含 | 字符' });
     if (/[\/\\]/.test(newName)) return json(res, 400, { error: '名称不能包含路径分隔符' });
+    // 白名单校验: 该名称会进入 agent 的 shell 流程，只允许字母/数字/中文/空格/._-
+    if (!/^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,63}$/u.test(newName)) {
+      return json(res, 400, { error: '名称只能包含中文、字母、数字、空格和 . _ -' });
+    }
     if (newName === n.name) return json(res, 400, { error: '名称未变化' });
     const newKey = newName + '|' + n.ip;
     if (data.nodes[newKey]) return json(res, 400, { error: '该名称已被同 IP 节点使用' });
@@ -1268,6 +1277,25 @@ const handler = async (req, res) => {
     const body = await readBody(req);
     const fields = pickCfg(body.fields);
     if (!Object.keys(fields).length) return json(res, 400, { error: 'no fields' });
+    // 下发的值最终会进入节点 agent 的 shell/jq 流程，必须在源头限制字符集
+    const RE_HOST = /^https?:\/\/[A-Za-z0-9._-]+(:[0-9]{1,5})?([/?][\w./~%-]*)?$/;
+    const RE_KEY = /^[A-Za-z0-9_\-!$+=.@:/]{1,128}$/;
+    const RE_DOMAIN = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/;
+    if (fields.ApiHost !== undefined && !RE_HOST.test(fields.ApiHost)) {
+      return json(res, 400, { error: 'ApiHost 格式非法（应为 http(s)://域名或IP[:端口]）' });
+    }
+    if (fields.ApiKey !== undefined && !RE_KEY.test(fields.ApiKey)) {
+      return json(res, 400, { error: 'ApiKey 含不允许的字符（引号/反引号/空格/分号等）' });
+    }
+    if (fields.NodeID !== undefined && !/^[0-9]{1,9}$/.test(String(fields.NodeID))) {
+      return json(res, 400, { error: 'NodeID 必须为数字' });
+    }
+    if (fields.CertDomain !== undefined && !RE_DOMAIN.test(fields.CertDomain)) {
+      return json(res, 400, { error: 'CertDomain 格式非法（只能包含字母/数字/点/连字符）' });
+    }
+    if (fields.Warp !== undefined && !['on', 'off'].includes(String(fields.Warp))) {
+      return json(res, 400, { error: 'Warp 只能为 on 或 off' });
+    }
     const isBatch = body.targets === 'all' || (Array.isArray(body.targets) && body.targets.length > 1);
     if (isBatch) {
       const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k));
