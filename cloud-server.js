@@ -244,7 +244,10 @@ function panelTag(n){const h=(n.info&&n.info.cfg&&n.info.cfg.ApiHost)||'';
  const s=h.replace(/^https?:[/][/]/,'').replace(/[/]+$/,'');
  let hue=0;for(let i=0;i<s.length;i++)hue=(hue*31+s.charCodeAt(i))%360;
  return '<span class="badge" style="background:hsl('+hue+' 55% 42%);color:#fff">'+escAttr(s)+'</span> ';}
-// 重复节点检测: 1) 同名但来自不同机器  2) 同一面板 + 同一 NodeID 落在多台机器
+// 重复节点检测:
+//   1) 同名 + 同面板 → 疑似真重复（同一面板节点被两台机器服务）
+//   2) 同名 + 不同面板 → 仅重名（各自服务各自面板，无需处理，只提示）
+//   3) 同面板 + 同 NodeID 落在多台机器 → 疑似真重复
 // 说明: ApiHost 为 127.0.0.1/localhost 时是"各机器自己的本地面板"，不算重复
 function dupMaps(){
  const byName={},byPanel={};
@@ -255,35 +258,45 @@ function dupMaps(){
    const k=host+'#'+nid;(byPanel[k]=byPanel[k]||[]).push(n);
   }
  });
- const f=function(o){return Object.entries(o).filter(function(e){return new Set(e[1].map(function(n){return n.ip;})).size>1;});};
- return {nameDups:f(byName),panelDups:f(byPanel)};
+ const multi=function(o){return Object.entries(o).filter(function(e){return new Set(e[1].map(function(n){return n.ip;})).size>1;});};
+ const nameAll=multi(byName);
+ const real=nameAll.filter(function(e){
+  const hosts=new Set(e[1].map(function(n){return (n.info.cfg&&n.info.cfg.ApiHost)||'';}));
+  return hosts.size===1;
+ });
+ const same=nameAll.filter(function(e){return real.indexOf(e)<0;});
+ return {realDups:real,nameOnly:same,panelDups:multi(byPanel)};
 }
 function dupInfo(n,maps){
- const same=maps.nameDups.filter(function(e){return e[0]===n.name;});
+ const hitReal=maps.realDups.filter(function(e){return e[0]===n.name;});
  const c=n.info.cfg||{};
- const sameP=maps.panelDups.filter(function(e){return e[0]===((c.ApiHost||'')+'#'+(c.NodeID||''));});
- const ips=[];
- same.forEach(function(e){e[1].forEach(function(x){if(x.ip!==n.ip&&ips.indexOf(x.ip)<0)ips.push(x.ip);});});
- sameP.forEach(function(e){e[1].forEach(function(x){if(x.ip!==n.ip&&ips.indexOf(x.ip)<0)ips.push(x.ip);});});
+ const hitPanel=maps.panelDups.filter(function(e){return e[0]===((c.ApiHost||'')+'#'+(c.NodeID||''));});
+ const hitSame=maps.nameOnly.filter(function(e){return e[0]===n.name;});
+ const ips=[],src=[].concat(hitReal,hitPanel,hitSame);
+ src.forEach(function(e){e[1].forEach(function(x){if(x.ip!==n.ip&&ips.indexOf(x.ip)<0)ips.push(x.ip);});});
  if(!ips.length)return null;
- return {name:same.length>0,panel:sameP.length>0,ips:ips};
+ return {kind:(hitReal.length||hitPanel.length)?'dup':'same',ips:ips};
 }
 function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
 function showDups(){
  const m=dupMaps();
  const lines=[];
- if(!m.nameDups.length&&!m.panelDups.length){
+ const sec=function(title,groups,tip){
+  if(!groups.length)return;
+  lines.push('<b>'+title+'</b>');
+  groups.forEach(function(e){
+   lines.push('<span class="muted">'+esc(e[0])+'</span>（'+e[1].length+' 台）');
+   e[1].sort(function(a,b){return (b.info.conns||0)-(a.info.conns||0);}).forEach(function(n){lines.push(dupItemHtml(n));});
+  });
+  if(tip)lines.push('<span class="small">'+tip+'</span>');
+ };
+ if(!m.realDups.length&&!m.panelDups.length&&!m.nameOnly.length){
   lines.push('<b style="color:#4ade80">✓ 未发现重复节点</b>');
-  lines.push('<span class="muted">同名不同机、或同一面板同一 NodeID 落在多台机器的情况都不存在</span>');
+  lines.push('<span class="muted">同名同面板、同面板同 NodeID 落在多台机器的情况都不存在</span>');
  } else {
-  m.nameDups.forEach(function(e){
-   lines.push('<b>⚠ 同名不同机：'+esc(e[0])+'</b>（'+e[1].length+' 台）');
-   e[1].sort(function(a,b){return (b.info.conns||0)-(a.info.conns||0);}).forEach(function(n){lines.push(dupItemHtml(n));});
-  });
-  m.panelDups.forEach(function(e){
-   lines.push('<b>⚠ 同面板同 NodeID：'+esc(e[0])+'</b>（'+e[1].length+' 台）');
-   e[1].sort(function(a,b){return (b.info.conns||0)-(a.info.conns||0);}).forEach(function(n){lines.push(dupItemHtml(n));});
-  });
+  sec('⚠ 疑似真重复（同名 + 同面板）',m.realDups,'同一面板节点被两台机器服务：保留在服役的那台，另一台请先停 V2bX 再删记录');
+  sec('⚠ 疑似真重复（同面板 + 同 NodeID）',m.panelDups,'面板里同一个节点号被两台机器占用：保留在服役的那台，或给另一台在面板里分配新 NodeID');
+  sec('ℹ 仅重名（同名但面板不同）',m.nameOnly,'各自服务各自面板，业务无冲突；仅显示上易混淆，可双击名称改成更易区分的名字');
  }
  showModal('🔍 重复节点检查',lines,'保留「有连接数 / 心跳最新」的那台，删除僵尸记录即可（删除只影响云控记录，不动节点上的 V2bX）；本地面板(127.0.0.1)的多机同号不算重复');
 }
@@ -328,7 +341,9 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  const online=NODES.filter(n=>n.online).length;
  const DUPS=dupMaps(); // 重复节点标记（同名不同机 / 同面板同 NodeID 多机）
  const dupTag=function(n){const d=dupInfo(n,DUPS);if(!d)return '';
-  return ' '+badge('b-warn','重复')+'<span class="small" style="color:hsl(var(--warn))"> 与 '+esc(d.ips.join(', '))+' 重复</span>';};
+  return d.kind==='dup'
+   ? ' '+badge('b-warn','重复')+'<span class="small" style="color:hsl(var(--warn))"> 与 '+esc(d.ips.join(', '))+' 重复</span>'
+   : ' '+badge('b-mut','同名')+'<span class="small muted"> 与 '+esc(d.ips.join(', '))+' 同名（面板不同）</span>';};
  document.getElementById('cnt').textContent='· '+online+'/'+NODES.length+' 在线';
  document.getElementById('cnt2').textContent='(显示 '+list.length+'/'+NODES.length+')';
  // 分组下拉选项
