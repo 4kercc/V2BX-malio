@@ -152,6 +152,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-outline btn-sm" onclick="setGroup()">设置选中分组</button>
   <button class="btn btn-outline btn-sm" onclick="deleteNodes()" title="删除选中节点的云控记录（不影响节点上的服务）">🗑 删除选中</button>
   <button class="btn btn-outline btn-sm" onclick="showCert()">🔐 证书到期</button>
+  <button class="btn btn-outline btn-sm" onclick="showDups()" title="检查同名不同机 / 同面板同 NodeID 的重复节点">🔍 重复检查</button>
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
 </div>
@@ -225,6 +226,49 @@ function panelTag(n){const h=(n.info&&n.info.cfg&&n.info.cfg.ApiHost)||'';
  const s=h.replace(/^https?:[/][/]/,'').replace(/[/]+$/,'');
  let hue=0;for(let i=0;i<s.length;i++)hue=(hue*31+s.charCodeAt(i))%360;
  return '<span class="badge" style="background:hsl('+hue+' 55% 42%);color:#fff">'+escAttr(s)+'</span> ';}
+// 重复节点检测: 1) 同名但来自不同机器  2) 同一面板 + 同一 NodeID 落在多台机器
+// 说明: ApiHost 为 127.0.0.1/localhost 时是"各机器自己的本地面板"，不算重复
+function dupMaps(){
+ const byName={},byPanel={};
+ NODES.forEach(function(n){
+  (byName[n.name]=byName[n.name]||[]).push(n);
+  const c=n.info.cfg||{},host=c.ApiHost||'',nid=c.NodeID||'';
+  if(host&&nid&&!/^https?:[/][/](127[.]0[.]0[.]1|localhost)(:|[/]|$)/.test(host)){
+   const k=host+'#'+nid;(byPanel[k]=byPanel[k]||[]).push(n);
+  }
+ });
+ const f=function(o){return Object.entries(o).filter(function(e){return new Set(e[1].map(function(n){return n.ip;})).size>1;});};
+ return {nameDups:f(byName),panelDups:f(byPanel)};
+}
+function dupInfo(n,maps){
+ const same=maps.nameDups.filter(function(e){return e[0]===n.name;});
+ const c=n.info.cfg||{};
+ const sameP=maps.panelDups.filter(function(e){return e[0]===((c.ApiHost||'')+'#'+(c.NodeID||''));});
+ const ips=[];
+ same.forEach(function(e){e[1].forEach(function(x){if(x.ip!==n.ip&&ips.indexOf(x.ip)<0)ips.push(x.ip);});});
+ sameP.forEach(function(e){e[1].forEach(function(x){if(x.ip!==n.ip&&ips.indexOf(x.ip)<0)ips.push(x.ip);});});
+ if(!ips.length)return null;
+ return {name:same.length>0,panel:sameP.length>0,ips:ips};
+}
+function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
+function showDups(){
+ const m=dupMaps();
+ const lines=[];
+ if(!m.nameDups.length&&!m.panelDups.length){
+  lines.push('<b style="color:#4ade80">✓ 未发现重复节点</b>');
+  lines.push('<span class="muted">同名不同机、或同一面板同一 NodeID 落在多台机器的情况都不存在</span>');
+ } else {
+  m.nameDups.forEach(function(e){
+   lines.push('<b>⚠ 同名不同机：'+esc(e[0])+'</b>（'+e[1].length+' 台）');
+   e[1].sort(function(a,b){return (b.info.conns||0)-(a.info.conns||0);}).forEach(function(n){lines.push(dupItemHtml(n));});
+  });
+  m.panelDups.forEach(function(e){
+   lines.push('<b>⚠ 同面板同 NodeID：'+esc(e[0])+'</b>（'+e[1].length+' 台）');
+   e[1].sort(function(a,b){return (b.info.conns||0)-(a.info.conns||0);}).forEach(function(n){lines.push(dupItemHtml(n));});
+  });
+ }
+ showModal('🔍 重复节点检查',lines,'保留「有连接数 / 心跳最新」的那台，删除僵尸记录即可（删除只影响云控记录，不动节点上的 V2bX）；本地面板(127.0.0.1)的多机同号不算重复');
+}
 let SORT={col:'',dir:1};
 function toggleSort(col){ // 点击表头循环: 升序 → 降序 → 恢复默认
  if(SORT.col===col){if(SORT.dir>0)SORT.dir=-1;else{SORT.col='';SORT.dir=1;}}else{SORT.col=col;SORT.dir=1;}
@@ -252,6 +296,9 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
    return 0;});
  }
  const online=NODES.filter(n=>n.online).length;
+ const DUPS=dupMaps(); // 重复节点标记（同名不同机 / 同面板同 NodeID 多机）
+ const dupTag=function(n){const d=dupInfo(n,DUPS);if(!d)return '';
+  return ' '+badge('b-warn','重复')+'<span class="small" style="color:hsl(var(--warn))"> 与 '+esc(d.ips.join(', '))+' 重复</span>';};
  document.getElementById('cnt').textContent='· '+online+'/'+NODES.length+' 在线';
  document.getElementById('cnt2').textContent='(显示 '+list.length+'/'+NODES.length+')';
  // 分组下拉选项
@@ -267,7 +314,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
- '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+'</td>'+
+ '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+dupTag(n)+'</td>'+
  '<td>'+(n.group?badge('b-mut',esc(n.group)):'-')+'</td>'+
  '<td class="small">'+esc(n.ip)+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',esc(n.info.version)):'-')+'</td>'+
@@ -525,6 +572,17 @@ function wireNodeList(id){var el=document.getElementById(id);
   if(a){e.preventDefault();if(tmr){clearTimeout(tmr);tmr=null;}
    renameNode(a.dataset.key,decodeURIComponent(a.dataset.name));}});}
 wireNodeList('tb');wireNodeList('mc');
+// 重复检查弹窗里的删除按钮（事件委托，避免内联拼接用户数据）
+document.getElementById('modalBox').addEventListener('click',function(e){
+ const b=e.target.closest('button.dupdel');if(!b)return;
+ const key=decodeURIComponent(b.dataset.key),nm=decodeURIComponent(b.dataset.name||'');
+ uiConfirm('删除节点记录「'+nm+'」？仅删除云控里的记录与历史，不影响节点上的 V2bX 服务',function(ok){
+  if(!ok)return;
+  api('/api/node_delete',{targets:[key]}).then(function(d){
+   if(d.error){show('被拒绝: '+d.error);return;}
+   show('✓ 已删除 1 条记录');closeModal();refresh();});
+ });
+});
 function toggleAll(cb){document.querySelectorAll('.sel').forEach(function(x){x.checked=cb.checked;});}
 </script>
 </body>
