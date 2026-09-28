@@ -141,6 +141,17 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <input id="fNodeId" placeholder="NodeID (数字)">
   <input id="fDomain" placeholder="CertDomain">
   <select id="fWarp"><option value="">WARP 不变</option><option value="on">WARP 开</option><option value="off">WARP 关</option></select>
+  <select id="fType" title="节点类型（与面板里该节点的类型必须一致；仅支持单台下发）">
+   <option value="">节点类型 不变</option>
+   <option value="anytls">anytls</option>
+   <option value="vless">vless</option>
+   <option value="vmess">vmess</option>
+   <option value="trojan">trojan</option>
+   <option value="shadowsocks">shadowsocks</option>
+   <option value="hysteria">hysteria</option>
+   <option value="hysteria2">hysteria2</option>
+   <option value="tuic">tuic</option>
+  </select>
  </div>
  <div class="row">
   <button class="btn btn-primary" onclick="sendDesired()">下发到选中节点</button>
@@ -277,6 +288,11 @@ function dupInfo(n,maps){
  if(!ips.length)return null;
  return {kind:(hitReal.length||hitPanel.length)?'dup':'same',ips:ips};
 }
+// 节点类型标记: 本项目为 AnyTLS 专用构建，非 anytls 类型标黄提示（可能是装错或面板类型不匹配）
+function typeTag(n){const t=(n.info.cfg&&n.info.cfg.NodeType)||'';if(!t)return '';
+ return /^anytls$/i.test(t)
+  ? '<span class="badge b-mut" style="font-size:10px">anytls</span>'
+  : '<span class="badge b-warn" style="font-size:10px" title="非 anytls 类型：若面板里该节点类型不是它，会导致节点无法正常服务">'+esc(t)+'</span>';}
 function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
 function showDups(){
  const m=dupMaps();
@@ -366,7 +382,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
  '<td>'+esc(n.info.warp||'-')+'</td>'+
  '<td>'+fmtCert(n.certDays)+'</td>'+
- '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b></div></td>'+
+ '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b> '+typeTag(n)+'</div></td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
  '<td>'+fmtAct(n.action)+'</td></tr>').join('');
@@ -383,7 +399,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">WARP</span><span>'+esc(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
- '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-'):'-'))+'</span>'+
+ '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-')+' '+typeTag(n):'-'))+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
  (n.desired?'<div class="small" style="margin-top:6px">待下发: '+esc(JSON.stringify(n.desired))+'</div>':'')+
@@ -433,7 +449,7 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  const conns=(m.recent||[]).map(s=>({v:s.c}));
  const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+esc(e.text)+'</li>').join('');
  showModal('📊 '+esc(d.name)+(d.group?' ['+esc(d.group)+']':''), [
-  'IP '+esc(d.ip)+' · 版本 '+esc(d.info.version||'-')+' · Agent v'+esc(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
+  'IP '+esc(d.ip)+' · 类型 '+esc((d.info.cfg&&d.info.cfg.NodeType)||'-')+' · 版本 '+esc(d.info.version||'-')+' · Agent v'+esc(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
   '<b>内存趋势（近 3 小时）</b>'+sparkline(recent,'hsl(217 91% 60%)'),
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
@@ -500,7 +516,7 @@ function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.te
 // 勾选目标去重: 桌面表格与移动卡片各有一套 checkbox，同一节点可能被勾两次
 // （不去重会导致"只选 1 台"被误判成批量下发，从而拦掉 NodeID 这类差异化字段）
 function targets(){const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
-function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
+function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fType','NodeType']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
@@ -956,12 +972,14 @@ function readBody(req) {
 }
 function pickCfg(cfg) {
   const out = {};
-  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp']) {
+  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp', 'NodeType']) {
     if (cfg && cfg[k] !== undefined && cfg[k] !== null && cfg[k] !== '') out[k] = cfg[k];
   }
   return out;
 }
-const PER_NODE_FIELDS = ['NodeID']; // 差异化字段：禁止多目标批量下发
+// 支持的节点类型（与 V2bX / V2bX.sh 一致）
+const NODE_TYPES = ['anytls', 'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria', 'hysteria2', 'tuic'];
+const PER_NODE_FIELDS = ['NodeID', 'NodeType']; // 差异化字段：禁止多目标批量下发
 // 目标列表归一化: 去重，避免同一节点被重复计入导致误判为批量下发
 function targetList(t) { return Array.isArray(t) ? [...new Set(t.map(String))] : t; }
 
@@ -1410,6 +1428,9 @@ const handler = async (req, res) => {
     }
     if (fields.Warp !== undefined && !['on', 'off'].includes(String(fields.Warp))) {
       return json(res, 400, { error: 'Warp 只能为 on 或 off' });
+    }
+    if (fields.NodeType !== undefined && !NODE_TYPES.includes(String(fields.NodeType))) {
+      return json(res, 400, { error: 'NodeType 非法（支持: ' + NODE_TYPES.join(' / ') + '）' });
     }
     const tgts = targetList(body.targets); // 去重后判定，避免同一节点重复提交被误判为批量
     const isBatch = tgts === 'all' || (Array.isArray(tgts) && tgts.length > 1);

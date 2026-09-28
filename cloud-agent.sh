@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="14"
+AGENT_VER="15"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -184,7 +184,7 @@ WANT_WARP_I=""
 
 for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$NO_CFG" == "1" ]]; then
-    NID=""; CUR_HOST=""; CUR_KEY=""; LIP=""; C_FILE=""; C_DOM=""
+    NID=""; CUR_HOST=""; CUR_KEY=""; LIP=""; C_FILE=""; C_DOM=""; N_TYPE=""
   else
     NID=$(jq -r ".Nodes[$i].NodeID // empty" "$CONFIG_JSON" 2>/dev/null)
     [[ -z "$NID" || "$NID" == "null" ]] && continue
@@ -193,6 +193,7 @@ for ((i=0; i<NODE_CNT; i++)); do
     LIP=$(jq -r ".Nodes[$i].ListenIP // empty" "$CONFIG_JSON" 2>/dev/null)
     C_FILE=$(jq -r ".Nodes[$i].CertConfig.CertFile // empty" "$CONFIG_JSON" 2>/dev/null)
     C_DOM=$(jq -r ".Nodes[$i].CertConfig.CertDomain // empty" "$CONFIG_JSON" 2>/dev/null)
+    N_TYPE=$(jq -r ".Nodes[$i].NodeType // empty" "$CONFIG_JSON" 2>/dev/null)
   fi
   if [[ "$NO_CFG" == "1" ]]; then NAME_I="$BASE_NAME"; else NAME_I=$(node_name "$NID"); fi
   CONNS_I=$(node_conns "$LIP")
@@ -212,11 +213,12 @@ for ((i=0; i<NODE_CNT; i++)); do
     --argjson cDays "${CERT_DAYS:-null}" --argjson cSelf "${CERT_SELF:-false}" \
     --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "${NID:-0}" \
     --arg apiHost "$CUR_HOST" --arg apiKey "$CUR_KEY" --arg certDomain "$C_DOM" --arg cName "$NAME_I" \
+    --arg nodeType "$N_TYPE" \
     '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
       warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
       cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf},
       appliedRename:$appliedRename, nodeCount:$nodeCount, nodeId:$nodeId,
-      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName}}' 2>/dev/null)
+      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType}}' 2>/dev/null)
   if [[ -z "$PAYLOAD" ]]; then log "node $NID: payload 构建失败"; continue; fi
 
   RESP=$(curl $CURL_TLS -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
@@ -263,6 +265,16 @@ for ((i=0; i<NODE_CNT; i++)); do
       log "node $NID: NodeID -> $WANT_ID（身份将随之变化）"
       CHANGED=1
     fi
+  fi
+
+  # 节点类型（白名单，防止写坏核心选择）
+  WANT_TYPE=$(jq -r '.desired.NodeType // empty' <<<"$RESP" 2>/dev/null)
+  if [[ -n "$WANT_TYPE" && "$WANT_TYPE" != "$N_TYPE" ]]; then
+    case "$WANT_TYPE" in
+      anytls|vless|vmess|trojan|shadowsocks|hysteria|hysteria2|tuic)
+        apply_node "$NID" ".NodeType" "$WANT_TYPE" "$N_TYPE" ;;
+      *) log "node $NID: NodeType 非法，已忽略: $WANT_TYPE" ;;
+    esac
   fi
 
   # WARP（全局，取本机任一节点下发的值）
