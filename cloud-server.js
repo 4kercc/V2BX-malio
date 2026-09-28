@@ -497,7 +497,9 @@ async function setGroup(){const t=targets();if(!t)return;const g=document.getEle
  const d=await api('/api/groups',{targets:t,group:g});show(d.error?('被拒绝: '+d.error):('✓ 已将 '+d.applied+' 台节点分组设为 ['+(d.group||'无')+']'));}
 function scheduleRefresh(){if(pollTimer)clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(AUTO)refresh();scheduleRefresh();},pollMs());}
 function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');if(AUTO)refresh();}
-function targets(){const s=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));if(!s.length){show('请先勾选节点');return null;}return s;}
+// 勾选目标去重: 桌面表格与移动卡片各有一套 checkbox，同一节点可能被勾两次
+// （不去重会导致"只选 1 台"被误判成批量下发，从而拦掉 NodeID 这类差异化字段）
+function targets(){const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
 function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
@@ -960,6 +962,8 @@ function pickCfg(cfg) {
   return out;
 }
 const PER_NODE_FIELDS = ['NodeID']; // 差异化字段：禁止多目标批量下发
+// 目标列表归一化: 去重，避免同一节点被重复计入导致误判为批量下发
+function targetList(t) { return Array.isArray(t) ? [...new Set(t.map(String))] : t; }
 
 // ---------- API ----------
 const handler = async (req, res) => {
@@ -1407,11 +1411,12 @@ const handler = async (req, res) => {
     if (fields.Warp !== undefined && !['on', 'off'].includes(String(fields.Warp))) {
       return json(res, 400, { error: 'Warp 只能为 on 或 off' });
     }
-    const isBatch = body.targets === 'all' || (Array.isArray(body.targets) && body.targets.length > 1);
+    const tgts = targetList(body.targets); // 去重后判定，避免同一节点重复提交被误判为批量
+    const isBatch = tgts === 'all' || (Array.isArray(tgts) && tgts.length > 1);
     if (isBatch) {
       const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k));
       if (bad.length) {
-        return json(res, 400, { error: `字段 ${bad.join(',')} 是每台节点不同的差异化配置，禁止批量下发，请单独勾选节点逐台设置` });
+        return json(res, 400, { error: `字段 ${bad.join(',')} 是每台节点不同的差异化配置，禁止批量下发（当前选中 ${tgts === 'all' ? '全部' : tgts.length + ' 台'}），请只勾选 1 台再下发` });
       }
     }
     let count = 0;
@@ -1431,10 +1436,11 @@ const handler = async (req, res) => {
 
   if (url === '/api/desired/clear' && req.method === 'POST') {
     const body = await readBody(req);
+    const tgts = targetList(body.targets);
     let count = 0;
     const hit = [];
     for (const [key, n] of Object.entries(data.nodes)) {
-      if (body.targets === 'all' || (body.targets || []).includes(key)) { n.desired = null; hit.push(key); count++; }
+      if (tgts === 'all' || (tgts || []).includes(key)) { n.desired = null; hit.push(key); count++; }
     }
     audit('desired-clear', '清除 ' + count + ' 台节点的期望配置');
     saveData(data);
@@ -1445,10 +1451,11 @@ const handler = async (req, res) => {
   if (url === '/api/action' && req.method === 'POST') {
     const body = await readBody(req);
     const act = body.action === 'update' ? 'update' : 'restart';
+    const tgts = targetList(body.targets);
     let count = 0;
     const hit = [];
     for (const [key, n] of Object.entries(data.nodes)) {
-      if (body.targets === 'all' || (body.targets || []).includes(key)) {
+      if (tgts === 'all' || (tgts || []).includes(key)) {
         n.pendingAction = act;
         n.action = {
           type: act,
