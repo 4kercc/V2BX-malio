@@ -167,12 +167,30 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <select id="hostFilter" onchange="render()" style="width:auto;min-width:180px">
    <option value="">全部面板域名</option>
   </select>
+  <select id="sortSel" onchange="setSortFromSelect()" style="width:auto;min-width:170px" title="排序方式（表头也可直接点击）">
+   <option value="">默认排序（在线优先）</option>
+   <option value="ip">按 IP 地址（同 IP 内按 NodeID）</option>
+   <option value="nodeid">按面板 NodeID</option>
+   <option value="name">按名称</option>
+   <option value="panel">按面板域名</option>
+   <option value="conns">按连接数</option>
+   <option value="rss">按内存</option>
+   <option value="cert">按证书剩余</option>
+   <option value="seen">按最后心跳</option>
+   <option value="group">按分组</option>
+   <option value="ver">按版本</option>
+   <option value="warp">按 WARP</option>
+   <option value="desired">按待下发</option>
+   <option value="action">按最近动作</option>
+   <option value="online">按在线状态</option>
+  </select>
+  <button class="btn btn-ghost btn-sm" id="sortDirBtn" onclick="toggleSortDir()" title="切换升序/降序">↑ 升序</button>
   <button class="btn btn-ghost btn-sm" onclick="showAudit()">📜 审计 / 事件日志</button>
  </div>
  <div class="tbwrap">
   <table><thead id="tbhead"><tr>
    <th style="width:32px"><input type="checkbox" id="selAll" onchange="toggleAll(this)" style="width:14px;height:14px;padding:0"></th>
-   <th class="sortable" data-col="online" onclick="toggleSort('online')">状态<span class="si"></span></th><th class="sortable" data-col="name" onclick="toggleSort('name')">名称<span class="si"></span></th><th class="sortable" data-col="group" onclick="toggleSort('group')">分组<span class="si"></span></th><th class="sortable" data-col="ip" onclick="toggleSort('ip')">IP<span class="si"></span></th><th class="sortable" data-col="ver" onclick="toggleSort('ver')">版本<span class="si"></span></th><th class="sortable" data-col="rss" onclick="toggleSort('rss')">内存<span class="si"></span></th><th class="sortable" data-col="conns" onclick="toggleSort('conns')">连接<span class="si"></span></th><th>WARP</th><th class="sortable" data-col="cert" onclick="toggleSort('cert')">证书<span class="si"></span></th><th class="sortable" data-col="panel" onclick="toggleSort('panel')" title="点击排序: 面板域名 → 节点ID">面板 / 节点ID<span class="si"></span></th><th class="sortable" data-col="seen" onclick="toggleSort('seen')">最后心跳<span class="si"></span></th><th>待下发</th><th>最近动作</th>
+   <th class="sortable" data-col="online" onclick="toggleSort('online')">状态<span class="si"></span></th><th class="sortable" data-col="name" onclick="toggleSort('name')">名称<span class="si"></span></th><th class="sortable" data-col="group" onclick="toggleSort('group')">分组<span class="si"></span></th><th class="sortable" data-col="ip" onclick="toggleSort('ip')">IP<span class="si"></span></th><th class="sortable" data-col="ver" onclick="toggleSort('ver')">版本<span class="si"></span></th><th class="sortable" data-col="rss" onclick="toggleSort('rss')">内存<span class="si"></span></th><th class="sortable" data-col="conns" onclick="toggleSort('conns')">连接<span class="si"></span></th><th class="sortable" data-col="warp" onclick="toggleSort('warp')">WARP<span class="si"></span></th><th class="sortable" data-col="cert" onclick="toggleSort('cert')">证书<span class="si"></span></th><th class="sortable" data-col="panel" onclick="toggleSort('panel')" title="点击排序: 面板域名 → 节点ID">面板 / 节点ID<span class="si"></span></th><th class="sortable" data-col="seen" onclick="toggleSort('seen')">最后心跳<span class="si"></span></th><th class="sortable" data-col="desired" onclick="toggleSort('desired')">待下发<span class="si"></span></th><th class="sortable" data-col="action" onclick="toggleSort('action')">最近动作<span class="si"></span></th>
   </tr></thead><tbody id="tb"></tbody></table>
  </div>
  <div class="only-mobile" id="mc"></div>
@@ -273,6 +291,8 @@ let SORT={col:'',dir:1};
 function toggleSort(col){ // 点击表头循环: 升序 → 降序 → 恢复默认
  if(SORT.col===col){if(SORT.dir>0)SORT.dir=-1;else{SORT.col='';SORT.dir=1;}}else{SORT.col=col;SORT.dir=1;}
  render();}
+function setSortFromSelect(){const el=document.getElementById('sortSel');SORT.col=el?el.value:'';SORT.dir=1;render();}
+function toggleSortDir(){if(!SORT.col){const el=document.getElementById('sortSel');if(el&&el.value){SORT.col=el.value;}}if(!SORT.col)return;SORT.dir=-SORT.dir;render();}
 function render(){const keepSel=new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)));
  const list=visibleNodes();
  // 表头排序（点击列头循环: 升序→降序→恢复默认"在线优先+名称"）
@@ -284,14 +304,24 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
    switch(SORT.col){
     case 'name':return D*cmpStr(a.name,b.name);
     case 'group':return D*cmpStr(a.group||'',b.group||'');
-    case 'ip':return D*cmpStr(a.ip,b.ip);
+    case 'ip':{ // IP 排序: 同 IP 的节点自动聚在一起，再按 NodeID、名称细分
+     const c=cmpStr(a.ip,b.ip);if(c)return D*c;
+     const an=((a.info.cfg&&a.info.cfg.NodeID)||0),bn=((b.info.cfg&&b.info.cfg.NodeID)||0);
+     if(an!==bn)return D*(an-bn);
+     return D*cmpStr(a.name,b.name);}
+    case 'nodeid':{const an=((a.info.cfg&&a.info.cfg.NodeID)||0),bn=((b.info.cfg&&b.info.cfg.NodeID)||0);
+     if(an!==bn)return D*(an-bn);return D*cmpStr(a.name,b.name);}
     case 'ver':return D*cmpStr(a.info.version,b.info.version);
     case 'rss':return D*((a.info.rss_mb||0)-(b.info.rss_mb||0));
     case 'conns':return D*((a.info.conns||0)-(b.info.conns||0));
+    case 'warp':return D*cmpStr(a.info.warp,b.info.warp);
     case 'cert':{const av=(a.certDays==null?Infinity:a.certDays),bv=(b.certDays==null?Infinity:b.certDays);return D*(av-bv);}
     case 'panel':{const h=cmpStr(ac.ApiHost,bc.ApiHost);if(h)return D*h;return D*((ac.NodeID||0)-(bc.NodeID||0));}
     case 'seen':return D*((a.lastSeen||0)-(b.lastSeen||0));
     case 'online':return D*((a.online?1:0)-(b.online?1:0));
+    case 'desired':{const av=a.desired?1:0,bv=b.desired?1:0;if(av!==bv)return D*(av-bv);return D*cmpStr(a.name,b.name);}
+    case 'action':{const as=a.action?1:0,bs=b.action?1:0;if(as!==bs)return D*(bs-as);
+     if(a.action&&b.action)return D*((b.action.queuedAt||0)-(a.action.queuedAt||0));return 0;}
    }
    return 0;});
  }
@@ -346,11 +376,19 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
  const all=[...document.querySelectorAll('.sel')];
  const sa=document.getElementById('selAll');if(sa)sa.checked=all.length>0&&all.every(x=>x.checked);
- // 表头排序指示符（▲/▼）
+ // 表头排序指示符（▲/▼，未激活时显示淡色 ⇅ 提示可点）
  document.querySelectorAll('#tbhead th.sortable').forEach(function(th){
   const si=th.querySelector('.si');if(!si)return;
-  si.textContent=(SORT.col===th.dataset.col)?(SORT.dir>0?'▲':'▼'):'';
- });}
+  const on=(SORT.col===th.dataset.col);
+  si.textContent=on?(SORT.dir>0?'▲':'▼'):'⇅';
+  si.style.opacity=on?'1':'.3';
+ });
+ // 排序下拉与方向按钮同步
+ const ss=document.getElementById('sortSel');
+ if(ss&&ss.value!==SORT.col)ss.value=SORT.col;
+ const sd=document.getElementById('sortDirBtn');
+ if(sd)sd.textContent=SORT.col?(SORT.dir>0?'↑ 升序':'↓ 降序'):'↑ 升序';
+}
 let AUTO=true;let pollTimer=null;
 function pollMs(){const inflight=NODES.some(n=>n.action&&(n.action.status==='queued'||n.action.status==='delivered'));return inflight?3000:5000;}
 async function refresh(){try{const d=await api('/api/nodes');if(!d.nodes)return;NODES=d.nodes||[];
