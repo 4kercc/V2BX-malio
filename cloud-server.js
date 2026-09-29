@@ -328,12 +328,12 @@ function startLogPoll(key){
   const d=await api('/api/log_fetch?key='+encodeURIComponent(key)+'&since='+LOGSEQ);
   const box=document.getElementById('logBox');
   if(!box||d.error){if(!box)stopLog();return;}
-  if(d.dropped&&LOGSEQ){box.textContent='（日志滚动过快，已重新载入）\n';LOGSEQ=0;} // 缓冲被裁剪
-  const add=(d.lines||[]).map(function(l){return l.text;}).join('\n');
-  if(add){box.textContent+=(box.textContent?'\n':'')+add;LOGSEQ=d.seq||LOGSEQ;}
+  if(d.dropped&&LOGSEQ){box.textContent='（日志滚动过快，已重新载入）\\n';LOGSEQ=0;} // 缓冲被裁剪
+  const add=(d.lines||[]).map(function(l){return l.text;}).join('\\n');
+  if(add){box.textContent+=(box.textContent?'\\n':'')+add;LOGSEQ=d.seq||LOGSEQ;}
   // 控制 DOM 体量: 超过 500 行只保留尾部
-  const lines=box.textContent.split('\n');
-  if(lines.length>500)box.textContent=lines.slice(-400).join('\n');
+  const lines=box.textContent.split('\\n');
+  if(lines.length>500)box.textContent=lines.slice(-400).join('\\n');
   box.scrollTop=box.scrollHeight;
   const st=document.getElementById('logStatus');
   if(st){const left=d.active?Math.max(0,Math.round((d.until-Date.now())/1000)):0;
