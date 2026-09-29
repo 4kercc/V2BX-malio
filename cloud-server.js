@@ -317,6 +317,51 @@ function showDups(){
  showModal('🔍 重复节点检查',lines,'保留「有连接数 / 心跳最新」的那台，删除僵尸记录即可（删除只影响云控记录，不动节点上的 V2bX）；本地面板(127.0.0.1)的多机同号不算重复');
 }
 let SORT={col:'',dir:1};
+// ---------- 实时日志查看（订阅窗口内节点持续回传 journalctl，UI 增量拉取） ----------
+let LOGTIMER=null,LOGKEY='',LOGSEQ=0;
+function stopLog(){if(LOGTIMER){clearInterval(LOGTIMER);LOGTIMER=null;}
+ if(LOGKEY){api('/api/log_stop',{targets:[LOGKEY]});LOGKEY='';}}
+function startLogPoll(key){
+ if(LOGTIMER)clearInterval(LOGTIMER);
+ const tick=async function(){
+  if(LOGKEY!==key)return;
+  const d=await api('/api/log_fetch?key='+encodeURIComponent(key)+'&since='+LOGSEQ);
+  const box=document.getElementById('logBox');
+  if(!box||d.error){if(!box)stopLog();return;}
+  if(d.dropped&&LOGSEQ){box.textContent='（日志滚动过快，已重新载入）\n';LOGSEQ=0;} // 缓冲被裁剪
+  const add=(d.lines||[]).map(function(l){return l.text;}).join('\n');
+  if(add){box.textContent+=(box.textContent?'\n':'')+add;LOGSEQ=d.seq||LOGSEQ;}
+  // 控制 DOM 体量: 超过 500 行只保留尾部
+  const lines=box.textContent.split('\n');
+  if(lines.length>500)box.textContent=lines.slice(-400).join('\n');
+  box.scrollTop=box.scrollHeight;
+  const st=document.getElementById('logStatus');
+  if(st){const left=d.active?Math.max(0,Math.round((d.until-Date.now())/1000)):0;
+   st.textContent=(d.active?('订阅中 · 剩余 '+left+'s'):'订阅已结束（可点「重新订阅」）')
+    +' · 已接收 '+LOGSEQ+' 行 · 节点最后回传 '+(d.at?fmtTime(d.at):'尚未回传')
+    +(d.active?'':' · 注意：节点离线时不会有日志') ;}
+ };
+ tick();LOGTIMER=setInterval(tick,1500);
+}
+async function showLog(keyEnc,nameEnc){
+ const key=decodeURIComponent(keyEnc),name=decodeURIComponent(nameEnc);
+ stopLog();
+ const d=await api('/api/log_start',{targets:[key],seconds:60});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ LOGKEY=key;LOGSEQ=0;
+ document.getElementById('modalBox').innerHTML='<h3>📜 实时日志</h3>'
+  +'<div class="muted small" style="margin-bottom:6px">'+esc(name)+' · '+esc(key.split('|')[1]||'')+'</div>'
+  +'<pre id="logBox" style="max-height:52vh;overflow:auto;background:#0b1020;color:#cfe3ff;font-size:12px;line-height:1.5;padding:10px;border-radius:8px;border:1px solid hsl(var(--border));white-space:pre-wrap;word-break:break-all;margin:0"></pre>'
+  +'<div class="foot" id="logStatus" style="margin-top:6px">已订阅 60 秒 · 正在获取…</div>'
+  +'<div style="margin-top:10px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="logRestart">重新订阅 60s</button>'
+  +'<button class="btn btn-ghost btn-sm" id="logStop">停止</button>'
+  +'<button class="btn btn-primary btn-sm" id="logClose">关闭</button></div>';
+ document.getElementById('modal').classList.add('show');
+ document.getElementById('logRestart').onclick=function(){showLog(keyEnc,nameEnc);};
+ document.getElementById('logStop').onclick=function(){stopLog();closeModal();};
+ document.getElementById('logClose').onclick=function(){stopLog();closeModal();};
+ startLogPoll(key);
+}
 function toggleSort(col){ // 点击表头循环: 升序 → 降序 → 恢复默认
  if(SORT.col===col){if(SORT.dir>0)SORT.dir=-1;else{SORT.col='';SORT.dir=1;}}else{SORT.col=col;SORT.dir=1;}
  render();}
@@ -375,7 +420,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  document.getElementById('tb').innerHTML=list.map(n=>'<tr>'+
  '<td><input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0"></td>'+
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
- '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+dupTag(n)+'</td>'+
+ '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+dupTag(n)+' <button class="btn btn-ghost btn-sm logbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="查看实时日志">📜</button></td>'+
  '<td>'+(n.group?badge('b-mut',esc(n.group)):'-')+'</td>'+
  '<td class="small">'+esc(n.ip)+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',esc(n.info.version)):'-')+'</td>'+
@@ -391,7 +436,8 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<input type="checkbox" class="sel" value="'+encodeURIComponent(n.key)+'" style="width:14px;height:14px;padding:0">'+
  (n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'<a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:inherit;text-decoration:none;font-weight:600;overflow-wrap:anywhere">'+esc(n.name)+'</a>'+(n.group?' '+badge('b-mut',esc(n.group)):'')+
  (n.renaming?' '+badge('b-info','✏ → '+n.renaming):'')+(n.pendingRename?' '+badge('b-warn','→ '+n.pendingRename):'')+
- '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button></div>'+fmtAct(n.action)+'</div>'+
+ '<button class="btn btn-ghost btn-sm renbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="重命名">改名</button>'+
+ '<button class="btn btn-ghost btn-sm logbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="查看实时日志">📜</button></div>'+fmtAct(n.action)+'</div>'+
  '<div class="ngrid"><span class="k">IP</span><span>'+esc(n.ip)+'</span>'+
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
@@ -637,7 +683,9 @@ function wireNodeList(id){var el=document.getElementById(id);
   if(a){e.preventDefault();if(tmr)clearTimeout(tmr);
    var k=a.dataset.key;tmr=setTimeout(function(){tmr=null;showNode(k);},220);return;}
   var b=e.target.closest('button.renbtn');
-  if(b){renameNode(b.dataset.key,decodeURIComponent(b.dataset.name));}});
+  if(b){renameNode(b.dataset.key,decodeURIComponent(b.dataset.name));return;}
+  var g=e.target.closest('button.logbtn');
+  if(g){showLog(g.dataset.key,g.dataset.name);}});
  el.addEventListener('dblclick',function(e){
   var a=e.target.closest('a.nlink');
   if(a){e.preventDefault();if(tmr){clearTimeout(tmr);tmr=null;}
@@ -980,6 +1028,29 @@ function pickCfg(cfg) {
 // 支持的节点类型（与 V2bX / V2bX.sh 一致）
 const NODE_TYPES = ['anytls', 'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria', 'hysteria2', 'tuic'];
 const PER_NODE_FIELDS = ['NodeID', 'NodeType']; // 差异化字段：禁止多目标批量下发
+// 实时日志: 订阅窗口内节点持续推送 journalctl 输出，UI 按序拉取增量
+function appendLog(rec, lines) {
+  rec.logBuf = rec.logBuf || [];
+  rec.logSeq = rec.logSeq || 0;
+  if (!Array.isArray(lines) || !lines.length) return 0;
+  // 与已有缓冲区尾部做最大重叠匹配，避免重复追加（节点每次发的是"最后 N 行"）
+  const max = Math.min(rec.logBuf.length, lines.length);
+  let overlap = 0;
+  for (let k = max; k > 0; k--) {
+    let ok = true;
+    for (let i = 0; i < k; i++) {
+      if (rec.logBuf[rec.logBuf.length - k + i].text !== String(lines[i])) { ok = false; break; }
+    }
+    if (ok) { overlap = k; break; }
+  }
+  let added = 0;
+  for (let i = overlap; i < lines.length; i++) {
+    rec.logBuf.push({ seq: ++rec.logSeq, t: Date.now(), text: String(lines[i]).slice(0, 2000) });
+    added++;
+  }
+  if (rec.logBuf.length > 400) rec.logBuf = rec.logBuf.slice(-400);
+  return added;
+}
 // 目标列表归一化: 去重，避免同一节点被重复计入导致误判为批量下发
 function targetList(t) { return Array.isArray(t) ? [...new Set(t.map(String))] : t; }
 
@@ -1148,6 +1219,8 @@ const handler = async (req, res) => {
     }
     const pending = rec.pendingAction;
     const reply = { desired: rec.desired || null, action: pending || 'none' };
+    // 实时日志订阅: 窗口内要求节点回传 journalctl 最新输出
+    if (rec.logUntil && rec.logUntil > Date.now()) reply.log = 1;
     if (pending === 'update') reply.version = data.updateVersion || '';
     // 重命名下发: pendingRename 携带新名，agent 应用后以 appliedRename 确认
     if (rec.pendingRename && rec.pendingRename.newName) reply.desiredName = rec.pendingRename.newName;
@@ -1226,6 +1299,26 @@ const handler = async (req, res) => {
     return json(res, 200, { ip, nodes: list, recommend: good.length ? good[0].name : '' });
   }
 
+  // ---------- 实时日志: 节点回传 journalctl 输出（nodeToken 鉴权） ----------
+  if (url === '/api/log_push' && req.method === 'POST') {
+    if (!rateLimit('hb:' + ip, 30, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
+      rateLimit('fail:' + ip, 10, 60000);
+      return json(res, 401, { error: 'bad token' });
+    }
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用' });
+    const body = await readBody(req);
+    const name = String(body.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
+    const key = name + '|' + ip;
+    const rec = data.nodes[key];
+    if (!rec) return json(res, 404, { error: '节点不存在' });
+    if (!(rec.logUntil && rec.logUntil > Date.now())) return json(res, 200, { ok: true, skipped: 1 }); // 未订阅则忽略
+    const added = appendLog(rec, (body.lines || []).map((x) => String(x)));
+    rec.logAt = Date.now();
+    saveData(data);
+    return json(res, 200, { ok: true, added, seq: rec.logSeq });
+  }
+
   // ---------- 节点长轮询：挂起连接等待任务，管理端下发命令时立即唤醒（秒级送达） ----------
   // 只做「有没有活」的判断，不改任何节点记录；被唤醒后节点会立刻跑一轮完整心跳来领取任务
   if (url === '/api/wait' && req.method === 'POST') {
@@ -1240,6 +1333,8 @@ const handler = async (req, res) => {
     const rec = data.nodes[key];
     const hasWork = !!(rec && (rec.desired || rec.pendingAction || rec.certQuery || (rec.pendingRename && rec.pendingRename.newName)));
     const hasAgentUpdate = !!(data.agentVersion && rec && String(rec.agentVer || '') !== String(data.agentVersion));
+    // 日志订阅期间不节流，让节点以最快节奏回传日志（近似 tail -f）
+    if (rec && rec.logUntil && rec.logUntil > Date.now()) return json(res, 200, { wake: 1 });
     if (hasWork || hasAgentUpdate) {
       // 同一节点 15s 内只立即唤醒一次：避免任务长期无法收敛（如 WARP 模板缺失）时守护进程空转
       const now = Date.now();
@@ -1284,6 +1379,51 @@ const handler = async (req, res) => {
     } catch (e) {
       return json(res, 500, { error: '证书解析失败: ' + e.message });
     }
+  }
+
+  // 实时日志订阅: 开始/停止（订阅窗口内节点会持续回传日志）
+  if (url === '/api/log_start' && req.method === 'POST') {
+    const body = await readBody(req);
+    const sec = Math.min(Math.max(Number(body.seconds) || 60, 10), 300);
+    const tgts = targetList(body.targets);
+    const hit = [];
+    for (const [key, n] of Object.entries(data.nodes)) {
+      if (tgts === 'all' || (tgts || []).includes(key)) {
+        n.logUntil = Date.now() + sec * 1000;
+        n.logBuf = []; n.logSeq = 0; n.logAt = 0; // 每次订阅从干净缓冲开始
+        hit.push(key);
+      }
+    }
+    if (!hit.length) return json(res, 400, { error: '未匹配到节点' });
+    audit('log-start', '实时日志订阅 ' + sec + 's × ' + hit.length + ' 台');
+    saveData(data);
+    flushWaiters(hit);
+    return json(res, 200, { ok: true, nodes: hit.length, seconds: sec });
+  }
+  if (url === '/api/log_stop' && req.method === 'POST') {
+    const body = await readBody(req);
+    const tgts = targetList(body.targets);
+    let count = 0;
+    for (const [key, n] of Object.entries(data.nodes)) {
+      if (tgts === 'all' || (tgts || []).includes(key)) { n.logUntil = 0; count++; }
+    }
+    saveData(data);
+    return json(res, 200, { ok: true, stopped: count });
+  }
+  if (url === '/api/log_fetch' && req.method === 'GET') {
+    const q = new URLSearchParams(req.url.split('?')[1] || '');
+    const key = q.get('key') || '';
+    const since = Number(q.get('since') || 0);
+    const n = data.nodes[key];
+    if (!n) return json(res, 404, { error: '节点不存在' });
+    const buf = n.logBuf || [];
+    const lines = buf.filter((x) => x.seq > since);
+    const dropped = buf.length && buf[0].seq > since + 1 && since > 0; // 增量超出缓冲范围（被裁剪）
+    return json(res, 200, {
+      seq: n.logSeq || 0, active: !!(n.logUntil && n.logUntil > Date.now()),
+      until: n.logUntil || 0, at: n.logAt || 0, dropped: !!dropped,
+      lines: lines.slice(-200)
+    });
   }
 
   if (url === '/api/nodes' && req.method === 'GET') {

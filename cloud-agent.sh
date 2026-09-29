@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="15"
+AGENT_VER="16"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -175,6 +175,28 @@ apply_node() { # $1=NodeID $2=jq路径 $3=期望值 $4=当前值 —— 只改�
 }
 
 ############################################
+# 实时日志: 服务端订阅期间回传 V2bX 最新日志（近似 tail -f）
+############################################
+push_logs() { # $1=该节点在云控上的名称
+  local name="$1" lines=""
+  if command -v journalctl >/dev/null 2>&1; then
+    lines=$(journalctl -u V2bX -n 60 --no-pager -o short-iso 2>/dev/null)
+    [[ -z "$lines" ]] && lines=$(journalctl -u v2bx -n 60 --no-pager -o short-iso 2>/dev/null)
+  fi
+  if [[ -z "$lines" ]]; then
+    local f
+    for f in /var/log/V2bX.log /var/log/v2bx.log /etc/V2bX/V2bX.log; do
+      [[ -f "$f" ]] && { lines=$(tail -n 60 "$f" 2>/dev/null); break; }
+    done
+  fi
+  [[ -z "$lines" ]] && lines="(未取到日志：journalctl -u V2bX 与常见日志文件均为空)"
+  local payload
+  payload=$(printf '%s' "$lines" | jq -R -s --arg name "$name" '{name:$name, lines:(split("\n") | map(select(length>0)))}' 2>/dev/null)
+  [[ -n "$payload" ]] && curl $CURL_TLS -sf --max-time 10 -X POST "$CLOUD_URL/api/log_push" \
+    -H "X-Token: $CLOUD_TOKEN" -H "Content-Type: application/json" -d "$payload" >/dev/null 2>&1
+}
+
+############################################
 # 逐节点: 心跳 + 按 NodeID 应用期望配置
 ############################################
 cp -f "$CONFIG_JSON" "$CONFIG_JSON.bak.cloud" 2>/dev/null || true
@@ -292,7 +314,9 @@ for ((i=0; i<NODE_CNT; i++)); do
     esac
   fi
   if [[ -n "$WANT_NAME" && "$WANT_NAME" != "$NAME_I" ]]; then
-    if [[ ${#WANT_NAME} -gt 64 ]]; then
+    # 注意: ${#VAR} 在 C locale 下按字节计数，中文名会被误判超长；这里只做粗暴上限保护
+    # （真正的 1-64 字符校验由服务端按字符数执行）
+    if [[ ${#WANT_NAME} -gt 255 ]]; then
       log "node $NID: 名称超长，跳过"
     else
       if grep -q "^NAME_${NID}=" "$CONF" 2>/dev/null; then
@@ -320,6 +344,9 @@ for ((i=0; i<NODE_CNT; i++)); do
     fi
   fi
   [[ "$(jq -r '.agentUpdate // "0"' <<<"$RESP" 2>/dev/null)" == "1" ]] && DO_AGENT_UPDATE=1
+
+  # ---- 实时日志: 服务端订阅期间回传 journalctl 最新输出 ----
+  [[ "$(jq -r '.log // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && push_logs "$NAME_I"
 done
 
 if [[ "$HB_OK" != "1" ]]; then log "全部节点心跳失败（共 $NODE_CNT 个），跳过后续处理"; exit 0; fi
