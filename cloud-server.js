@@ -164,6 +164,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-outline btn-sm" onclick="deleteNodes()" title="删除选中节点的云控记录（不影响节点上的服务）">🗑 删除选中</button>
   <button class="btn btn-outline btn-sm" onclick="showCert()">🔐 证书到期</button>
   <button class="btn btn-outline btn-sm" onclick="showDups()" title="检查同名不同机 / 同面板同 NodeID 的重复节点">🔍 重复检查</button>
+  <button class="btn btn-outline btn-sm" onclick="showMedia()" title="检测 YouTube / ChatGPT / Netflix / Google 拉黑（未勾选则检测全部）">🌐 媒体检测</button>
  </div>
  <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
 </div>
@@ -293,6 +294,14 @@ function typeTag(n){const t=(n.info.cfg&&n.info.cfg.NodeType)||'';if(!t)return '
  return /^anytls$/i.test(t)
   ? '<span class="badge b-mut" style="font-size:10px">anytls</span>'
   : '<span class="badge b-warn" style="font-size:10px" title="非 anytls 类型：若面板里该节点类型不是它，会导致节点无法正常服务">'+esc(t)+'</span>';}
+// Google 拉黑标记（媒体检测结果）: 列表里直接可见
+function mediaTag(n){const m=n.media;
+ if(!m||!m.at)return '';
+ if(m.google&&m.google.blocked)return ' <span class="badge b-bad" style="font-size:10px" title="Google 搜索被跳转 /sorry/，出口 IP 疑似被拉黑（点顶部「🌐 媒体检测」看详情）">🚫Google拉黑</span>';
+ if(m.youtube&&m.youtube.blocked)return ' <span class="badge b-bad" style="font-size:10px" title="YouTube 提示异常流量，出口 IP 疑似被拉黑">🚫YT异常</span>';
+ const ytOk=m.youtube&&m.youtube.region;
+ return ytOk?' <span class="badge b-mut" style="font-size:10px" title="YouTube 解锁区域">YT '+esc(m.youtube.region)+'</span>':'';
+}
 function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
 function showDups(){
  const m=dupMaps();
@@ -317,7 +326,63 @@ function showDups(){
  showModal('🔍 重复节点检查',lines,'保留「有连接数 / 心跳最新」的那台，删除僵尸记录即可（删除只影响云控记录，不动节点上的 V2bX）；本地面板(127.0.0.1)的多机同号不算重复');
 }
 let SORT={col:'',dir:1};
-// ---------- 实时日志查看（订阅窗口内节点持续回传 journalctl，UI 增量拉取） ----------
+// ---------- 媒体解锁检测（YouTube / ChatGPT / Netflix / Google 拉黑判定） ----------
+function mediaCell(m){
+ if(!m||!m.at)return '<span class="muted">未检测</span>';
+ const yt=m.youtube&&m.youtube.blocked?'<b style="color:#f87171" title="YouTube 提示异常流量，出口 IP 疑似被拉黑">🚫 异常流量</b>'
+  :(m.youtube&&m.youtube.region?('<b style="color:#4ade80">✅ '+esc(m.youtube.region)+'</b>'):'<b style="color:#f87171">⛔ 不可用</b>');
+ let g;
+ if(m.google&&m.google.blocked)g='<b style="color:#f87171" title="搜索被跳转 /sorry/，IP 被判定异常流量">🚫 被拉黑</b>';
+ else if(m.google&&m.google.ok)g='<b style="color:#4ade80">✅ 正常</b>';
+ else g='<b style="color:#fbbf24" title="HTTP 状态: '+esc(m.google&&m.google.code)+'">⚠ 不通</b>';
+ const nf=m.netflix&&m.netflix.ok?'<b style="color:#4ade80">✅ 可看</b>':'<b style="color:#fbbf24" title="HTTP 状态: '+esc(m.netflix&&m.netflix.code)+'">⛔ 受限</b>';
+ let gpt;
+ if(m.chatgpt&&m.chatgpt.ok)gpt='<b style="color:#4ade80">✅ 可用</b>';
+ else if(String(m.chatgpt&&m.chatgpt.code)==='403')gpt='<b style="color:#fbbf24" title="403：可能要求登录或该出口被拒">⚠ 403</b>';
+ else gpt='<b style="color:#f87171" title="HTTP 状态: '+esc(m.chatgpt&&m.chatgpt.code)+'">⛔ 不可用</b>';
+ return {yt:yt,g:g,nf:nf,gpt:gpt,ip:esc(m.ip||'-'),loc:esc(m.loc||'-'),at:fmtTime(m.at)};
+}
+function renderMediaModal(list,q,all){
+ const tb=document.getElementById('mediaTb');if(!tb)return true;
+ const sel=NODES.filter(function(n){return list.indexOf(n.key)>=0;});
+ let pending=0;
+ tb.innerHTML=sel.map(function(n){
+  const m=n.media;
+  const fresh=m&&m.at&&m.at>=q;
+  if(!fresh)pending++;
+  if(!m||!m.at)return '<tr><td>'+esc(n.name)+'</td><td colspan="6" class="muted">等待节点回传…（离线节点不会回传）</td></tr>';
+  const c=mediaCell(m);
+  if(!fresh)return '<tr><td>'+esc(n.name)+'</td><td colspan="6" class="muted">检测中…（上次结果：'+esc(c.ip)+' · '+c.at+'）</td></tr>';
+  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span></td><td>'+c.yt+'</td><td>'+c.gpt+'</td><td>'+c.nf+'</td><td>'+c.g+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
+ }).join('');
+ const st=document.getElementById('mediaStatus');
+ if(st)st.textContent=(all?'未勾选节点，已检测全部 ':'已检测 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回传…'):'✓ 全部已回传');
+ return pending===0;
+}
+async function showMedia(){
+ const keys=[...new Set([...document.querySelectorAll('.sel:checked')].map(function(x){return decodeURIComponent(x.value);}))];
+ const all=keys.length===0;
+ const list=all?NODES.map(function(n){return n.key;}):keys;
+ if(!list.length){show('暂无节点');return;}
+ const d=await api('/api/media_query',{targets:list});
+ if(d.error){show('被拒绝: '+d.error);return;}
+ const q=d.queryAt||Date.now();
+ document.getElementById('modalBox').innerHTML='<h3>🌐 媒体解锁检测</h3>'
+  +'<div class="muted small" style="margin-bottom:6px">YouTube / ChatGPT / Netflix / Google 拉黑判定（每台约 10 秒，离线节点不会回传）</div>'
+  +'<div style="max-height:52vh;overflow:auto"><table style="min-width:680px"><thead><tr><th>节点</th><th>出口 IP</th><th>YouTube</th><th>ChatGPT</th><th>Netflix</th><th>Google</th><th>检测时间</th></tr></thead><tbody id="mediaTb"></tbody></table></div>'
+  +'<div class="foot" id="mediaStatus" style="margin-top:6px"></div>'
+  +'<div style="margin-top:10px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mediaAgain">重新检测</button>'
+  +'<button class="btn btn-primary btn-sm" id="mediaClose">关闭</button></div>';
+ document.getElementById('modal').classList.add('show');
+ document.getElementById('mediaAgain').onclick=function(){showMedia();};
+ document.getElementById('mediaClose').onclick=function(){closeModal();};
+ renderMediaModal(list,q,all);
+ for(let i=0;i<24;i++){ // 每台约 10 秒，最多等 ~36 秒
+  await new Promise(function(r){setTimeout(r,1500);});
+  await refresh();
+  if(renderMediaModal(list,q,all))break;
+ }
+}
 let LOGTIMER=null,LOGKEY='',LOGSEQ=0;
 function stopLog(){if(LOGTIMER){clearInterval(LOGTIMER);LOGTIMER=null;}
  if(LOGKEY){api('/api/log_stop',{targets:[LOGKEY]});LOGKEY='';}}
@@ -427,7 +492,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
  '<td>'+esc(n.info.warp||'-')+'</td>'+
  '<td>'+fmtCert(n.certDays)+'</td>'+
- '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b> '+typeTag(n)+'</div></td>'+
+ '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b> '+typeTag(n)+mediaTag(n)+'</div></td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
  '<td>'+fmtAct(n.action)+'</td></tr>').join('');
@@ -1096,8 +1161,10 @@ const handler = async (req, res) => {
   }
 
   // ---------- 节点心跳（节点专用 nodeToken + 限速） ----------
+  // 限速说明: 一台机器可能有多个节点条目（单机多节点），每次 agent 运行会发 N 个心跳，
+  // 因此按「节点」限速（20/分）而不是按 IP；另设 IP 上限做 DoS 兜底
   if (url === '/api/heartbeat' && req.method === 'POST') {
-    if (!rateLimit('hb:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!rateLimit('hbip:' + ip, 150, 60000)) return json(res, 429, { error: 'rate limited' });
     if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
       rateLimit('fail:' + ip, 10, 60000);
       return json(res, 401, { error: 'bad token' });
@@ -1119,6 +1186,8 @@ const handler = async (req, res) => {
     }
     const rawName = String(body.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
     const name = (rawName || 'unknown').slice(0, 64);
+    // 按节点限速（多节点机器一次运行发 N 个心跳，按 IP 限速会误伤）
+    if (!rateLimit('hb:' + name + '|' + ip, 20, 60000)) return json(res, 429, { error: 'rate limited' });
     // 空名称心跳: 正常 agent 一定带 NODE_NAME，出现说明该节点有旧版/残留脚本（会导致重复记录）
     if (!rawName && rateLimit('noname:' + ip, 1, 30 * 60 * 1000)) {
       const ev = addEvent('unknown', 'warn', '收到无名称心跳（来自 ' + ip + '）——该节点可能存在旧版 agent 或残留定时任务，请在节点上重跑 cloud-agent-update.sh');
@@ -1221,6 +1290,8 @@ const handler = async (req, res) => {
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     // 实时日志订阅: 窗口内要求节点回传 journalctl 最新输出
     if (rec.logUntil && rec.logUntil > Date.now()) reply.log = 1;
+    // 媒体检测: 面板触发的一次性任务
+    if (rec.mediaQuery) reply.media = 1;
     if (pending === 'update') reply.version = data.updateVersion || '';
     // 重命名下发: pendingRename 携带新名，agent 应用后以 appliedRename 确认
     if (rec.pendingRename && rec.pendingRename.newName) reply.desiredName = rec.pendingRename.newName;
@@ -1301,7 +1372,7 @@ const handler = async (req, res) => {
 
   // ---------- 实时日志: 节点回传 journalctl 输出（nodeToken 鉴权） ----------
   if (url === '/api/log_push' && req.method === 'POST') {
-    if (!rateLimit('hb:' + ip, 30, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!rateLimit('logpush:' + ip, 100, 60000)) return json(res, 429, { error: 'rate limited' });
     if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
       rateLimit('fail:' + ip, 10, 60000);
       return json(res, 401, { error: 'bad token' });
@@ -1319,10 +1390,44 @@ const handler = async (req, res) => {
     return json(res, 200, { ok: true, added, seq: rec.logSeq });
   }
 
+  // ---------- 媒体解锁检测: 节点回传结果（nodeToken 鉴权） ----------
+  if (url === '/api/media_push' && req.method === 'POST') {
+    if (!rateLimit('mediapush:' + ip, 20, 60000)) return json(res, 429, { error: 'rate limited' });
+    if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
+      rateLimit('fail:' + ip, 10, 60000);
+      return json(res, 401, { error: 'bad token' });
+    }
+    if (defaultTokenBlocked()) return json(res, 403, { error: '默认 nodeToken 禁止使用' });
+    const body = await readBody(req);
+    const m = body.media && typeof body.media === 'object' ? body.media : body;
+    const name = String(m.name || '').replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 64);
+    const key = name + '|' + ip;
+    const rec = data.nodes[key];
+    if (!rec) return json(res, 404, { error: '节点不存在' });
+    const clip = (v) => String(v == null ? '' : v).slice(0, 64);
+    rec.media = {
+      at: Date.now(),
+      ip: clip(m.ip), loc: clip(m.loc), ms: Number(m.ms) || 0,
+      youtube: { ok: !!(m.youtube && m.youtube.ok), region: clip(m.youtube && m.youtube.region), blocked: !!(m.youtube && m.youtube.blocked) },
+      google: { ok: !!(m.google && m.google.ok), blocked: !!(m.google && m.google.blocked), code: clip(m.google && m.google.code) },
+      netflix: { ok: !!(m.netflix && m.netflix.ok), code: clip(m.netflix && m.netflix.code) },
+      chatgpt: { ok: !!(m.chatgpt && m.chatgpt.ok), code: clip(m.chatgpt && m.chatgpt.code), loc: clip(m.chatgpt && m.chatgpt.loc) }
+    };
+    if (rec.media.google.blocked || rec.media.youtube.blocked) {
+      const why = rec.media.google.blocked ? 'Google 搜索跳转 /sorry/' : 'YouTube 提示异常流量';
+      const ev = addEvent(rec.name, 'media', '⚠ ' + why + '：出口 IP ' + (rec.media.ip || '?') + ' 疑似被拉黑，建议更换出口');
+      notify('⚠️ [' + rec.name + '] ' + ev.text);
+    }
+    rec.mediaQuery = null;
+    saveData(data);
+    return json(res, 200, { ok: true });
+  }
+
   // ---------- 节点长轮询：挂起连接等待任务，管理端下发命令时立即唤醒（秒级送达） ----------
   // 只做「有没有活」的判断，不改任何节点记录；被唤醒后节点会立刻跑一轮完整心跳来领取任务
   if (url === '/api/wait' && req.method === 'POST') {
-    if (!rateLimit('hb:' + ip, 10, 60000)) return json(res, 429, { error: 'rate limited' });
+    // 长轮询是常驻连接：按 IP 给足额度（订阅期间节奏快），另由下方节流控制空转
+    if (!rateLimit('waitip:' + ip, 150, 60000)) return json(res, 429, { error: 'rate limited' });
     if (!safeEqual(req.headers['x-token'], data.nodeToken)) {
       rateLimit('fail:' + ip, 10, 60000);
       return json(res, 401, { error: 'bad token' });
@@ -1331,10 +1436,17 @@ const handler = async (req, res) => {
     const body = await readBody(req);
     const key = String(body.name || 'unknown').slice(0, 64) + '|' + ip;
     const rec = data.nodes[key];
-    const hasWork = !!(rec && (rec.desired || rec.pendingAction || rec.certQuery || (rec.pendingRename && rec.pendingRename.newName)));
+    const hasWork = !!(rec && (rec.desired || rec.pendingAction || rec.certQuery || rec.mediaQuery || (rec.pendingRename && rec.pendingRename.newName)));
     const hasAgentUpdate = !!(data.agentVersion && rec && String(rec.agentVer || '') !== String(data.agentVersion));
-    // 日志订阅期间不节流，让节点以最快节奏回传日志（近似 tail -f）
-    if (rec && rec.logUntil && rec.logUntil > Date.now()) return json(res, 200, { wake: 1 });
+    // 日志订阅: 节流到 2.5s 一次（近似 tail -f，同时避免 agent 高频循环打爆心跳限速）
+    if (rec && rec.logUntil && rec.logUntil > Date.now()) {
+      const now = Date.now();
+      if (now - (lastWakeAt.get('log:' + key) || 0) > 2500) {
+        lastWakeAt.set('log:' + key, now);
+        return json(res, 200, { wake: 1 });
+      }
+      return waitForNode(key, res);
+    }
     if (hasWork || hasAgentUpdate) {
       // 同一节点 15s 内只立即唤醒一次：避免任务长期无法收敛（如 WARP 模板缺失）时守护进程空转
       const now = Date.now();
@@ -1382,6 +1494,21 @@ const handler = async (req, res) => {
   }
 
   // 实时日志订阅: 开始/停止（订阅窗口内节点会持续回传日志）
+  // 媒体解锁检测: 面板触发（选中节点或全部），节点下一次心跳立即执行并回传
+  if (url === '/api/media_query' && req.method === 'POST') {
+    const body = await readBody(req);
+    const tgts = targetList(body.targets);
+    const hit = [];
+    for (const [key, n] of Object.entries(data.nodes)) {
+      if (tgts === 'all' || (tgts || []).includes(key)) { n.mediaQuery = Date.now(); hit.push(key); }
+    }
+    if (!hit.length) return json(res, 400, { error: '未匹配到节点' });
+    audit('media-query', '媒体解锁检测 ' + hit.length + ' 台');
+    saveData(data);
+    flushWaiters(hit);
+    return json(res, 200, { ok: true, queried: hit.length, queryAt: Date.now() });
+  }
+
   if (url === '/api/log_start' && req.method === 'POST') {
     const body = await readBody(req);
     const sec = Math.min(Math.max(Number(body.seconds) || 60, 10), 300);
@@ -1454,6 +1581,7 @@ const handler = async (req, res) => {
       renaming: n.pendingRename ? n.pendingRename.newName : null,
       desired: n.desired || null, action: effAction(n),
       cert: n.cert || null, certQuery: n.certQuery || null,
+      media: n.media || null, mediaQuery: n.mediaQuery || null,
       nodeCount: n.nodeCount || 1, nodeId: n.nodeId || null
     })).sort((a, b) => (a.online === b.online) ? a.name.localeCompare(b.name) : (a.online ? -1 : 1));
     return json(res, 200, {

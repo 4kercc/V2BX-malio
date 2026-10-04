@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="16"
+AGENT_VER="18"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -197,6 +197,53 @@ push_logs() { # $1=该节点在云控上的名称
 }
 
 ############################################
+# 媒体解锁检测: YouTube / ChatGPT / Netflix / Google 拉黑判定（面板按需触发）
+#   判据: Google 搜索被 302 到 /sorry/ = IP 被判定异常流量（俗称被谷歌拉黑）
+############################################
+media_check() { # $1=该节点在云控上的名称
+  local name="$1" d trace ip loc yt="" gcode="" gredir="" nfcode="" gptcode="" gptloc="" ms
+  ms=$(date +%s%3N 2>/dev/null || echo 0)
+  d=$(mktemp -d 2>/dev/null) || return 0
+  # 并发探测（每项限时，互不阻塞）
+  # YouTube: 带 SOCS=CAI 绕过 consent 页；页面内 "GL":"XX" 即出口区域，另捕获"异常流量/sorry"提示
+  ( curl -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
+  ( curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
+  ( curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
+  ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
+  ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://chatgpt.com/ > "$d/gpt" 2>/dev/null ) &
+  ( curl -s --max-time 6 https://chatgpt.com/cdn-cgi/trace > "$d/gpttr" 2>/dev/null ) &
+  trace=$(curl -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+  wait
+  ip=$(printf '%s' "$trace" | grep -m1 '^ip=' | cut -d= -f2)
+  loc=$(printf '%s' "$trace" | grep -m1 '^loc=' | cut -d= -f2)
+  yt=$(grep -o '"GL":"[A-Z][A-Z]"' "$d/yt" 2>/dev/null | head -1 | sed 's/.*"GL":"\([A-Z][A-Z]\)".*/\1/')
+  local ytbad=false
+  grep -qiE 'unusual traffic|sorry/index|detected unusual' "$d/yt" 2>/dev/null && ytbad=true
+  gcode=$(cat "$d/g" 2>/dev/null | tr -d '\n')
+  read -r gredir_code gredir_url < <(cat "$d/gb" 2>/dev/null)
+  nfcode=$(cat "$d/nf" 2>/dev/null | tr -d '\n')
+  gptcode=$(cat "$d/gpt" 2>/dev/null | tr -d '\n')
+  gptloc=$(grep -m1 '^loc=' "$d/gpttr" 2>/dev/null | cut -d= -f2)
+  rm -rf "$d"
+  local gblocked=false
+  printf '%s' "$gredir_url" | grep -q '/sorry/' && gblocked=true
+  local payload
+  payload=$(jq -n \
+    --arg ip "${ip:-}" --arg loc "${loc:-}" \
+    --arg yt "${yt:-}" --arg ytb "$ytbad" --arg g "${gcode:-0}" --arg gb "$gblocked" --arg gn "${gredir_code:-0}" \
+    --arg nf "${nfcode:-0}" --arg gpt "${gptcode:-0}" --arg gptloc "${gptloc:-}" \
+    --argjson ms "$(( $(date +%s%3N 2>/dev/null || echo 0) - ${ms:-0} ))" \
+    '{ip:$ip, loc:$loc, ms:$ms,
+      youtube:{region:$yt, ok:($yt != ""), blocked:($ytb == "true")},
+      google:{ok:($g == "204"), blocked:($gb == "true"), code:$gn},
+      netflix:{ok:($nf == "200"), code:$nf},
+      chatgpt:{ok:($gpt == "200"), code:$gpt, loc:$gptloc}}' 2>/dev/null)
+  [[ -n "$payload" ]] && curl $CURL_TLS -sf --max-time 10 -X POST "$CLOUD_URL/api/media_push" \
+    -H "X-Token: $CLOUD_TOKEN" -H "Content-Type: application/json" \
+    -d "$(printf '%s' "$payload" | jq -c --arg name "$name" '. + {name:$name}')" >/dev/null 2>&1
+}
+
+############################################
 # 逐节点: 心跳 + 按 NodeID 应用期望配置
 ############################################
 cp -f "$CONFIG_JSON" "$CONFIG_JSON.bak.cloud" 2>/dev/null || true
@@ -347,6 +394,8 @@ for ((i=0; i<NODE_CNT; i++)); do
 
   # ---- 实时日志: 服务端订阅期间回传 journalctl 最新输出 ----
   [[ "$(jq -r '.log // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && push_logs "$NAME_I"
+  # ---- 媒体检测: 面板按需触发（结果回传后由服务端清除标记） ----
+  [[ "$(jq -r '.media // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && media_check "$NAME_I"
 done
 
 if [[ "$HB_OK" != "1" ]]; then log "全部节点心跳失败（共 $NODE_CNT 个），跳过后续处理"; exit 0; fi
