@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="22"
+AGENT_VER="23"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -539,29 +539,8 @@ if [[ "$DO_RESTART" == "1" ]]; then
   systemctl restart V2bX && { log "action: restarted (nodes=$NODE_CNT)"; echo "restart $(date +%s)" > /tmp/.v2bx-cloud-ack; }
   exit 0
 fi
-if [[ "$DO_AGENT_UPDATE" == "1" ]]; then
-  log "agent: self-update to server version"
-  curl $CURL_TLS -fsSL -o /usr/local/V2bX/cloud-agent.sh.new \
-    "https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh" 2>/dev/null
-  if [[ -s /usr/local/V2bX/cloud-agent.sh.new ]] \
-     && bash -n /usr/local/V2bX/cloud-agent.sh.new 2>/dev/null \
-     && grep -q 'AGENT_VER' /usr/local/V2bX/cloud-agent.sh.new; then
-    mv -f /usr/local/V2bX/cloud-agent.sh.new /usr/local/V2bX/cloud-agent.sh
-    chmod +x /usr/local/V2bX/cloud-agent.sh
-    log "agent: self-update applied"
-  else
-    rm -f /usr/local/V2bX/cloud-agent.sh.new
-    log "agent: self-update download invalid, skipped"
-  fi
-  # 本轮若刚改过 sing_origin.json（GoogleV4），这里补一次重启，避免改动悬空（下轮已无差异不会再触发）
-  if [[ "$G4_APPLIED" == "1" ]]; then
-    systemctl restart V2bX 2>/dev/null \
-      && log "config changed(与 agent 自更新同轮), V2bX restarted" \
-      || log "config changed, 但 restart 失败（自更新同轮）"
-  fi
-  exit 0
-fi
 
+# 配置变更重启（放在 agent 自更新之前：自更新会 exit，曾导致本轮配置改动悬空不生效）
 if [[ "$CHANGED" == "1" ]]; then
   if systemctl restart V2bX 2>/dev/null; then
     sleep 2
@@ -579,4 +558,25 @@ if [[ "$CHANGED" == "1" ]]; then
   fi
 else
   log "heartbeat ok (nodes=$NODE_CNT, no change)"
+fi
+
+############################################
+# agent 自更新（放最后：不阻断本轮配置变更；只在下载版本更新时覆盖，防 CDN 缓存旧版导致降级/空转）
+############################################
+if [[ "$DO_AGENT_UPDATE" == "1" ]]; then
+  log "agent: self-update to server version"
+  curl $CURL_TLS -fsSL -o /usr/local/V2bX/cloud-agent.sh.new \
+    "https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh" 2>/dev/null
+  NEWVER=$(grep -m1 -oP '^AGENT_VER="\K[0-9]+' /usr/local/V2bX/cloud-agent.sh.new 2>/dev/null)
+  if [[ -s /usr/local/V2bX/cloud-agent.sh.new ]] \
+     && bash -n /usr/local/V2bX/cloud-agent.sh.new 2>/dev/null \
+     && [[ -n "$NEWVER" ]] && [[ "$NEWVER" -gt "$AGENT_VER" ]]; then
+    mv -f /usr/local/V2bX/cloud-agent.sh.new /usr/local/V2bX/cloud-agent.sh
+    chmod +x /usr/local/V2bX/cloud-agent.sh
+    log "agent: self-update applied (v$AGENT_VER -> v$NEWVER)"
+  else
+    rm -f /usr/local/V2bX/cloud-agent.sh.new
+    log "agent: self-update skipped（下载版本 v${NEWVER:-未知} 未高于当前 v$AGENT_VER，疑似 CDN 缓存旧版）"
+  fi
+  exit 0
 fi
