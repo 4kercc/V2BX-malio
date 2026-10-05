@@ -844,13 +844,16 @@ button:disabled{opacity:.6;cursor:default}
 </style>
 </head>
 <body>
-<form class="box" id="f" autocomplete="off">
+<form class="box" id="f" name="login">
  <h1>V2bX 云控中心</h1>
  <p class="sub">请输入管理 Token 登录</p>
- <label for="t">管理 Token</label>
- <input id="t" type="password" autocomplete="current-password" autofocus>
+ <label for="u">账号</label>
+ <input id="u" name="username" type="text" autocomplete="username" value="admin" spellcheck="false" autocapitalize="off">
+ <label for="t" style="margin-top:10px">管理 Token</label>
+ <input id="t" name="password" type="password" autocomplete="current-password" autofocus>
  <button id="b" type="submit">登 录</button>
  <div id="err"></div>
+ <p class="sub" style="margin:10px 0 0">账号仅用于密码管理器识别，实际校验的是管理 Token</p>
 </form>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){
