@@ -296,12 +296,15 @@ function typeTag(n){const t=(n.info.cfg&&n.info.cfg.NodeType)||'';if(!t)return '
   ? '<span class="badge b-mut" style="font-size:10px">anytls</span>'
   : '<span class="badge b-warn" style="font-size:10px" title="非 anytls 类型：若面板里该节点类型不是它，会导致节点无法正常服务">'+esc(t)+'</span>';}
 // Google 拉黑标记（媒体检测结果）: 列表里直接可见
-// ---------- 流媒体解锁: 列表内联图标（两行两列；失败直接标原因 ✗(403) / ✗(拉黑)） ----------
+// ---------- 流媒体解锁: 列表内联图标（2×2 固定宽度网格，右列对齐；失败标原因 ✗(403)/✗(拉黑)） ----------
+var OPENAI_PATH='M22.282 9.821a6 6 0 0 0-.516-4.91a6.05 6.05 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a6 6 0 0 0-3.998 2.9a6.05 6.05 0 0 0 .743 7.097a5.98 5.98 0 0 0 .51 4.911a6.05 6.05 0 0 0 6.515 2.9A6 6 0 0 0 13.26 24a6.06 6.06 0 0 0 5.772-4.206a6 6 0 0 0 3.997-2.9a6.06 6.06 0 0 0-.747-7.073M13.26 22.43a4.48 4.48 0 0 1-2.876-1.04l.141-.081l4.779-2.758a.8.8 0 0 0 .392-.681v-6.737l2.02 1.168a.07.07 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494M3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085l4.783 2.759a.77.77 0 0 0 .78 0l5.843-3.369v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646M2.34 7.896a4.5 4.5 0 0 1 2.366-1.973V11.6a.77.77 0 0 0 .388.677l5.815 3.354l-2.02 1.168a.08.08 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855l-5.833-3.387L15.119 7.2a.08.08 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.678a.79.79 0 0 0-.407-.667m2.01-3.023l-.141-.085l-4.774-2.782a.78.78 0 0 0-.785 0L9.409 9.23V6.897a.07.07 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135l-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.142.08L8.704 5.46a.8.8 0 0 0-.393.681zm1.097-2.365l2.602-1.5l2.607 1.5v2.999l-2.597 1.5l-2.607-1.5Z';
+var GLYPH_YT='<svg width="10" height="10" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="#fff"/></svg>';
+var GLYPH_GPT='<svg width="11" height="11" viewBox="0 0 24 24" aria-hidden="true"><path d="'+OPENAI_PATH+'" fill="#fff"/></svg>';
 function mChip(bg,glyph,state,label,tip){
  const color=state==='ok'?'#4ade80':(state==='warn'?'#fbbf24':'#f87171');
  const mark=state==='ok'?'✓':'✗';
- return '<span title="'+esc(tip)+'" style="display:inline-flex;align-items:center;gap:2px;white-space:nowrap">'
-  +'<span style="display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:4px;background:'+bg+';color:#fff;font-size:9px;font-weight:700">'+glyph+'</span>'
+ return '<span title="'+esc(tip)+'" style="display:inline-flex;align-items:center;gap:3px;white-space:nowrap">'
+  +'<span style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:4px;background:'+bg+';color:#fff;font-size:9px;font-weight:700">'+glyph+'</span>'
   +'<b style="color:'+color+';font-size:11px">'+mark+(label?('('+esc(label)+')'):'')+'</b></span>';
 }
 function mediaScore(n){
@@ -317,24 +320,24 @@ function mediaChips(n){
  const m=n.media;
  if(!m||!m.at)return '<span class="muted" style="font-size:11px">待检测</span>';
  const yt=(m.youtube&&m.youtube.blocked)
-  ?mChip('#FF0000','▶','bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑')
+  ?mChip('#FF0000',GLYPH_YT,'bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑')
   :(m.youtube&&m.youtube.ok)
-   ?mChip('#FF0000','▶','ok',(m.youtube.region||''),'YouTube 可用 · 解锁区域 '+(m.youtube.region||'未知'))
-   :mChip('#FF0000','▶','bad','','YouTube 不可用');
+   ?mChip('#FF0000',GLYPH_YT,'ok',(m.youtube.region||''),'YouTube 可用 · 解锁区域 '+(m.youtube.region||'未知'))
+   :mChip('#FF0000',GLYPH_YT,'bad','','YouTube 不可用');
  const g=(m.google&&m.google.blocked)
   ?mChip('#4285F4','G','bad','拉黑','Google 搜索被跳转 /sorry/：出口 IP 被判定异常流量')
   :(m.google&&m.google.ok)
    ?mChip('#4285F4','G','ok','','Google 正常')
    :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · HTTP '+((m.google&&m.google.code)||'-'));
  const ai=(m.chatgpt&&m.chatgpt.ok)
-  ?mChip('#10A37F','AI','ok','','ChatGPT 可用')
-  :mChip('#10A37F','AI','warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):''));
+  ?mChip('#10A37F',GLYPH_GPT,'ok','','ChatGPT 可用')
+  :mChip('#10A37F',GLYPH_GPT,'warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):''));
  const nf=(m.netflix&&m.netflix.ok)
   ?mChip('#E50914','N','ok','','Netflix 可看')
   :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-'));
- return '<span style="display:inline-flex;flex-direction:column;gap:2px">'
-  +'<span style="display:flex;gap:8px">'+yt+g+'</span>'
-  +'<span style="display:flex;gap:8px">'+ai+nf+'</span></span>';
+ // 固定两列宽度的网格: 两行两列且跨节点对齐
+ return '<span style="display:inline-grid;grid-template-columns:66px 44px;gap:2px 4px;justify-items:start;align-items:center">'
+  +yt+g+ai+nf+'</span>';
 }
 function mediaTag(n){const m=n.media;
  if(!m||!m.at)return '';
