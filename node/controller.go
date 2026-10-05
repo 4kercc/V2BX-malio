@@ -74,6 +74,12 @@ func (c *Controller) Start() error {
 	}
 	c.limiter = l
 	if node.Security == panel.Tls {
+		// Panel-driven certificate chain: install pushed material or adopt the
+		// panel domain before the certificate is requested.
+		err = c.applyPanelTLSConfig(node)
+		if err != nil {
+			log.WithField("tag", c.tag).Warnf("Apply panel certificate failed: %s", err)
+		}
 		err = c.requestCert()
 		if err != nil {
 			return fmt.Errorf("request cert error: %s", err)

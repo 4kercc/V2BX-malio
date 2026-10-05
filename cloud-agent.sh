@@ -133,12 +133,16 @@ node_conns() { # $1=ListenIP → 该节点监听端口上的入站连接数（�
     END { print n+0 }'
 }
 
-cert_probe() { # $1=CertFile $2=CertDomain → 设置 CERT_PATH/CERT_DOMAIN/CERT_END/CERT_DAYS/CERT_SELF
+cert_probe() { # $1=CertFile $2=CertDomain → 设置 CERT_PATH/CERT_DOMAIN/CERT_END/CERT_DAYS/CERT_SELF/CERT_FB*
   CERT_PATH=""; CERT_DOMAIN=""; CERT_END=""; CERT_DAYS=""; CERT_SELF="false"
+  # ACME 失败降级标记（V2bX 写 <CertFile>.acme-fallback）:
+  # 用于把"申请失败自动降级自签"与"运维有意配置自签"区分开，只对前者告警
+  CERT_FB="false"; CERT_FB_AT=""; CERT_FB_ERR=""
   local f="$1" dom="$2" cand=() d cn iss
   [[ -n "$f" ]] && cand+=("$f")
   if [[ -n "$dom" ]]; then
     for d in "/etc/ssl/${dom}.crt" "/etc/ssl/certs/${dom}.crt" "/etc/V2bX/cert/${dom}.crt" \
+             "/etc/V2bX/cert/${dom}/fullchain.pem" \
              "/etc/V2bX/certs/${dom}.crt" "/etc/V2bX/${dom}.crt" "/root/cert/${dom}.crt" \
              "/etc/letsencrypt/live/${dom}/fullchain.pem" \
              "/root/.acme.sh/${dom}_ecc/fullchain.cer" "/root/.acme.sh/${dom}/fullchain.cer"; do
@@ -163,6 +167,12 @@ cert_probe() { # $1=CertFile $2=CertDomain → 设置 CERT_PATH/CERT_DOMAIN/CERT
       CERT_DOMAIN="${cn:-$dom}"
       [[ -n "$cn" && "$cn" == "$iss" ]] && CERT_SELF="true"
     fi
+  fi
+  # ACME 申请失败降级: V2bX 在证书旁留下标记文件，带上失败时间与原因
+  if [[ -n "$CERT_PATH" && -f "${CERT_PATH}.acme-fallback" ]]; then
+    CERT_FB="true"
+    CERT_FB_AT=$(jq -r '.at // empty' "${CERT_PATH}.acme-fallback" 2>/dev/null)
+    CERT_FB_ERR=$(jq -r '.error // empty' "${CERT_PATH}.acme-fallback" 2>/dev/null | head -c 200)
   fi
 }
 
@@ -398,6 +408,15 @@ for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$NO_CFG" == "1" ]]; then NAME_I="$BASE_NAME"; else NAME_I=$(node_name "$NID"); fi
   CONNS_I=$(node_conns "$LIP")
   cert_probe "$C_FILE" "$C_DOM"
+  # 只在状态翻转时记日志（心跳很频繁），面板侧另有事件与告警
+  FB_MARK="/tmp/.v2bx-cloud-certfallback-${NID:-nocfg}"
+  if [[ "$CERT_FB" == "true" && ! -f "$FB_MARK" ]]; then
+    log "node $NID: 证书为 ACME 申请失败降级自签（${CERT_FB_AT:-未知时间}）: ${CERT_FB_ERR:-无原因}"
+    : > "$FB_MARK"
+  elif [[ "$CERT_FB" != "true" && -f "$FB_MARK" ]]; then
+    log "node $NID: 证书已恢复为正式证书（ACME 降级标记消失）"
+    rm -f "$FB_MARK"
+  fi
 
   # 该节点的真实出口 IP（媒体探测要绑到它，才等于用户实际走的 IP）:
   # 取 SendIP —— 这正是 V2bX 同进同出给 node_N_out 绑定的地址；没有 SendIP 就说明
@@ -422,12 +441,14 @@ for ((i=0; i<NODE_CNT; i++)); do
     --arg agentVer "$AGENT_VER" --argjson certDays "${CERT_DAYS:-null}" \
     --arg cPath "$CERT_PATH" --arg cDomain "$CERT_DOMAIN" --arg cEnd "$CERT_END" \
     --argjson cDays "${CERT_DAYS:-null}" --argjson cSelf "${CERT_SELF:-false}" \
+    --argjson cFb "${CERT_FB:-false}" --arg cFbAt "$CERT_FB_AT" --arg cFbErr "$CERT_FB_ERR" \
     --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "${NID:-0}" \
     --arg apiHost "$CUR_HOST" --arg apiKey "$CUR_KEY" --arg certDomain "$C_DOM" --arg cName "$NAME_I" \
     --arg nodeType "$N_TYPE" --arg googleV4 "$(g4_state)" \
     '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
       warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
-      cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf},
+      cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf,
+            fallback:$cFb, fallbackAt:$cFbAt, fallbackError:$cFbErr},
       appliedRename:$appliedRename, nodeCount:$nodeCount, nodeId:$nodeId,
       cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType, GoogleV4:$googleV4}}' 2>/dev/null)
   if [[ -z "$PAYLOAD" ]]; then log "node $NID: payload 构建失败"; continue; fi

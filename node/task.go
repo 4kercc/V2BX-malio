@@ -122,6 +122,15 @@ func (c *Controller) nodeInfoMonitor() (err error) {
 
 		// check cert
 		if newN.Security == panel.Tls {
+			// Panel-driven certificate chain: install pushed material or adopt
+			// the panel domain before the certificate is requested.
+			err = c.applyPanelTLSConfig(newN)
+			if err != nil {
+				log.WithFields(log.Fields{
+					"tag": c.tag,
+					"err": err,
+				}).Warn("Apply panel certificate failed")
+			}
 			err = c.requestCert()
 			if err != nil {
 				log.WithFields(log.Fields{

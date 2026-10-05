@@ -250,6 +250,11 @@ function fmtCert(d){if(d===null||d===undefined)return badge('b-mut','-');
  if(d<=14)return badge('b-warn',d+'天');
  if(d<=21)return badge('b-info',d+'天');
  return badge('b-ok',d+'天');}
+// 证书单元格: 自签/ACME 失败降级必须显式标出，剩余天数多长都不代表证书可信
+function certCell(n){const c=n.cert||{};
+ if(c.fallback)return badge('b-bad','自签·ACME失败')+' '+fmtCert(n.certDays);
+ if(c.selfSigned)return badge('b-warn','自签')+' '+fmtCert(n.certDays);
+ return fmtCert(n.certDays);}
 function visibleNodes(){const gf=document.getElementById('groupFilter').value;
  const hf=document.getElementById('hostFilter').value;
  return NODES.filter(n=>(!gf||n.group===gf)&&(!hf||((n.info.cfg&&n.info.cfg.ApiHost)||'')===hf));}
@@ -353,7 +358,7 @@ function mediaTag(n){const m=n.media;
  if(m.youtube&&m.youtube.blocked)return ' <span class="badge b-bad" style="font-size:10px" title="YouTube 提示异常流量，出口 IP 疑似被拉黑">🚫YT异常</span>';
  return '';
 }
-function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
+function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+((n.cert&&n.cert.fallback)?' (ACME失败降级自签)':((n.cert&&n.cert.selfSigned)?' (自签)':''))+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
 function showDups(){
  const m=dupMaps();
  const lines=[];
@@ -554,7 +559,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td>'+(n.info.version?badge('b-mut',esc(n.info.version)):'-')+'</td>'+
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
  '<td>'+esc(n.info.warp||'-')+'</td>'+
- '<td>'+fmtCert(n.certDays)+'</td>'+
+ '<td>'+certCell(n)+'</td>'+
  '<td class="small"><div class="ellip">'+panelTag(n)+'<b style="font-size:12px">#'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</b> '+typeTag(n)+mediaTag(n)+'</div></td>'+
  '<td class="small" style="white-space:nowrap">'+fmtTime(n.lastSeen)+'</td>'+
  '<td class="small">'+(n.desired?badge('b-warn','待应用'):'-')+'</td>'+
@@ -573,7 +578,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">流媒体</span><span>'+mediaChips(n)+'</span>'+
  '<span class="k">WARP</span><span>'+esc(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
- '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
+ '<span class="k">证书</span><span>'+certCell(n)+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-')+' '+typeTag(n):'-'))+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
@@ -639,7 +644,8 @@ function certLine(n,q){
  const c=n.cert;
  if(c&&c.checkedAt&&c.checkedAt>=q){
   if(!c.path)return esc(n.name)+' — <span class="muted">未找到证书文件</span>';
-  return esc(n.name)+' — '+esc(c.domain||'-')+(c.selfSigned?' <span class="muted">(自签)</span>':'')+' · 到期 '+esc(fmtCertEnd(c.end))+' · '+certDaysHtml(c.days);
+  const fb=c.fallback?(' <span class="muted">(ACME 申请失败降级自签'+(c.fallbackAt?(' '+esc(fmtCertEnd(c.fallbackAt))):'')+(c.fallbackError?('：'+esc(c.fallbackError)):'')+')</span>'):'';
+  return esc(n.name)+' — '+esc(c.domain||'-')+(c.selfSigned?' <span class="muted">(自签)</span>':'')+fb+' · 到期 '+esc(fmtCertEnd(c.end))+' · '+certDaysHtml(c.days);
  }
  if(c&&c.path)return esc(n.name)+' — '+esc(c.domain||'-')+' · '+certDaysHtml(c.days)+' <span class="muted">(上次结果)</span>';
  if(n.certDays!==null&&n.certDays!==undefined)return esc(n.name)+' — 剩余 '+certDaysHtml(n.certDays)+' <span class="muted">(agent 待升级，无详情)</span>';
@@ -1371,10 +1377,27 @@ const handler = async (req, res) => {
       rec.cert = {
         path: String(body.cert.path || ''), domain: String(body.cert.domain || ''),
         end: String(body.cert.end || ''), days: Number.isFinite(cd) ? cd : null,
-        selfSigned: !!body.cert.selfSigned, checkedAt: Date.now()
+        selfSigned: !!body.cert.selfSigned, checkedAt: Date.now(),
+        // ACME 申请失败自动降级自签: 节点侧标记文件经 agent 上报，和运维有意配置的自签区分开
+        fallback: !!body.cert.fallback,
+        fallbackAt: String(body.cert.fallbackAt || ''),
+        fallbackError: String(body.cert.fallbackError || '').slice(0, 200)
       };
       if (Number.isFinite(cd)) rec.certDays = cd;
       if (rec.certQuery) rec.certQuery = null;
+    }
+    // ACME 降级告警: 只在翻转时告警与恢复，避免每个心跳重复推送
+    const certFb = !!(rec.cert && rec.cert.fallback);
+    if (certFb && !rec.certFbWarn) {
+      rec.certFbWarn = true;
+      const dom = (rec.cert.domain || '') || ((rec.info.cfg && rec.info.cfg.CertDomain) || '');
+      const ev = addEvent(rec.name, 'cert', 'ACME 申请失败，已降级自签证书' + (dom ? '（' + dom + '）' : '')
+        + '，校验链的客户端会握手失败；节点仍在每日重试申请');
+      notify('🔐 [' + rec.name + '] ' + ev.text + (rec.cert.fallbackError ? '｜原因: ' + rec.cert.fallbackError : ''));
+    } else if (!certFb && rec.certFbWarn) {
+      rec.certFbWarn = false;
+      const ev = addEvent(rec.name, 'cert', '证书已由降级自签恢复为正式证书');
+      notify('🟢 [' + rec.name + '] ' + ev.text);
     }
     if (body.certDays !== undefined && body.certDays !== null && body.certDays !== '') {
       const cd = Number(body.certDays);
