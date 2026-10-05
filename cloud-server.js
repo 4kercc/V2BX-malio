@@ -319,25 +319,30 @@ function mediaScore(n){
 function mediaChips(n){
  const m=n.media;
  if(!m||!m.at)return '<span class="muted" style="font-size:11px">待检测</span>';
+ const ip=String(m.ip||'');
+ const is6=ip.indexOf(':')>=0;
+ const famTip=ip?('出口 '+(is6?'IPv6':'IPv4')+'：'+ip+(m.loc?(' · '+m.loc):'')):'出口 IP 未知';
  const yt=(m.youtube&&m.youtube.blocked)
-  ?mChip('#FF0000',GLYPH_YT,'bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑')
+  ?mChip('#FF0000',GLYPH_YT,'bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑 · '+famTip)
   :(m.youtube&&m.youtube.ok)
-   ?mChip('#FF0000',GLYPH_YT,'ok',(m.youtube.region||''),'YouTube 可用 · 解锁区域 '+(m.youtube.region||'未知'))
-   :mChip('#FF0000',GLYPH_YT,'bad','','YouTube 不可用');
+   ?mChip('#FF0000',GLYPH_YT,'ok',(m.youtube.region||''),'YouTube 可用 · 解锁区域 '+(m.youtube.region||'未知')+' · '+famTip)
+   :mChip('#FF0000',GLYPH_YT,'bad','','YouTube 不可用 · '+famTip);
  const g=(m.google&&m.google.blocked)
-  ?mChip('#4285F4','G','bad','拉黑','Google 搜索被跳转 /sorry/：出口 IP 被判定异常流量')
+  ?mChip('#4285F4','G','bad','拉黑','Google 搜索被跳转 /sorry/：出口 IP 被判定异常流量 · '+famTip)
   :(m.google&&m.google.ok)
-   ?mChip('#4285F4','G','ok','','Google 正常（generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-')+'）')
-   :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-'));
+   ?mChip('#4285F4','G','ok','','Google 正常（generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-')+'）· '+famTip)
+   :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-')+' · '+famTip);
  const ai=(m.chatgpt&&m.chatgpt.ok)
-  ?mChip('#10A37F',GLYPH_GPT,'ok','','ChatGPT 可用')
-  :mChip('#10A37F',GLYPH_GPT,'warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):''));
+  ?mChip('#10A37F',GLYPH_GPT,'ok','','ChatGPT 可用 · '+famTip)
+  :mChip('#10A37F',GLYPH_GPT,'warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):'')+' · '+famTip);
  const nf=(m.netflix&&m.netflix.ok)
-  ?mChip('#E50914','N','ok','','Netflix 可看')
-  :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-'));
- // 固定两列宽度的网格: 两行两列且跨节点对齐
- return '<span style="display:inline-grid;grid-template-columns:66px 44px;gap:2px 4px;justify-items:start;align-items:center">'
-  +yt+g+ai+nf+'</span>';
+  ?mChip('#E50914','N','ok','','Netflix 可看 · '+famTip)
+  :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-')+' · '+famTip);
+ // 固定两列宽度的网格: 两行两列且跨节点对齐；末尾小字标注出口是 IPv4 还是 IPv6
+ const fam=ip?('<span title="'+esc(famTip)+'" style="font-size:9px;line-height:12px;color:'+(is6?'#93c5fd':'#a1a1aa')+';border:1px solid '+(is6?'#3b82f6':'#3f3f46')+';border-radius:3px;padding:0 3px;white-space:nowrap">'+(is6?'v6':'v4')+'</span>'):'';
+ return '<span style="display:inline-flex;align-items:center;gap:5px">'
+  +'<span style="display:inline-grid;grid-template-columns:66px 44px;gap:2px 4px;justify-items:start;align-items:center">'+yt+g+ai+nf+'</span>'
+  +fam+'</span>';
 }
 function mediaTag(n){const m=n.media;
  if(!m||!m.at)return '';
