@@ -327,7 +327,8 @@ function mediaChips(n){
  const ip=String(m.ip||'');
  const is6=ip.indexOf(':')>=0;
  const g4on=String((n.info&&n.info.cfg&&n.info.cfg.GoogleV4)||'')==='on';
- const famTip=ip?('出口 '+(is6?'IPv6':'IPv4')+'：'+ip+(m.loc?(' · '+m.loc):'')+(g4on?' · 已强制 Google/YT 走 IPv4（sing-box 路由）':'')):'出口 IP 未知';
+ const src=String(m.src||'');
+ const famTip=ip?('出口 '+(is6?'IPv6':'IPv4')+'：'+ip+(m.loc?(' · '+m.loc):'')+(src?(' · 探测绑定节点出口 '+src):'')+(g4on?' · 已强制 Google/YT 走 IPv4（sing-box 路由）':'')):'出口 IP 未知';
  const yt=(m.youtube&&m.youtube.blocked)
   ?mChip('#FF0000',GLYPH_YT,'bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑 · '+famTip)
   :(m.youtube&&m.youtube.ok)
@@ -393,7 +394,7 @@ function mediaCell(m){
  if(m.chatgpt&&m.chatgpt.ok)gpt='<b style="color:#4ade80">✅ 可用</b>';
  else if(String(m.chatgpt&&m.chatgpt.code)==='403')gpt='<b style="color:#fbbf24" title="403：可能要求登录或该出口被拒">⚠ 403</b>';
  else gpt='<b style="color:#f87171" title="HTTP 状态: '+esc(m.chatgpt&&m.chatgpt.code)+'">⛔ 不可用</b>';
- return {yt:yt,g:g,nf:nf,gpt:gpt,ip:esc(m.ip||'-'),loc:esc(m.loc||'-'),at:fmtTime(m.at)};
+ return {yt:yt,g:g,nf:nf,gpt:gpt,ip:esc(m.ip||'-'),loc:esc(m.loc||'-'),src:esc(m.src||''),at:fmtTime(m.at)};
 }
 function renderMediaModal(list,q,all){
  const tb=document.getElementById('mediaTb');if(!tb)return true;
@@ -407,7 +408,7 @@ function renderMediaModal(list,q,all){
   const c=mediaCell(m);
   const g4on=String((n.info&&n.info.cfg&&n.info.cfg.GoogleV4)||'')==='on';
   if(!fresh)return '<tr><td>'+esc(n.name)+'</td><td colspan="3" class="muted">检测中…（上次结果：'+esc(c.ip)+' · '+c.at+'）</td></tr>';
-  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span>'+(g4on?' <span class="badge b-mut" style="font-size:10px" title="节点侧 sing-box 已把 Google/YouTube 路由到 IPv4 直连出站（本行探测也为 IPv4）">Google走v4</span>':'')+'</td><td>'+mediaChips(n)+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
+  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span>'+(m.src?' <span class="badge b-mut" style="font-size:10px" title="本行探测绑定到该节点自己的出口 IP（同进同出绑定 SendIP），不是本机默认出口">绑定 '+esc(m.src)+'</span>':'')+(g4on?' <span class="badge b-mut" style="font-size:10px" title="节点侧 sing-box 已把 Google/YouTube 路由到 IPv4 直连出站（本行探测也为 IPv4）">Google走v4</span>':'')+'</td><td>'+mediaChips(n)+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
  }).join('');
  const st=document.getElementById('mediaStatus');
  if(st)st.textContent=(all?'未勾选节点，已检测全部 ':'已检测 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回传…'):'✓ 全部已回传');

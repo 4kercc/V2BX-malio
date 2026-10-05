@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="23"
+AGENT_VER="24"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -106,6 +106,9 @@ BASE_NAME="${NODE_NAME:-}"
 [[ "$BASE_NAME" == "unknown" || "$BASE_NAME" == "null" ]] && BASE_NAME=""
 [[ -z "$BASE_NAME" ]] && BASE_NAME="$HOSTNAME"
 
+# 本机真实地址列表（媒体探测绑定前校验，避免绑到不存在的地址；无 ip 命令则跳过校验）
+LOCAL_IPS=$(ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+
 node_name() { # $1=NodeID → 输出该节点在云控上的名称
   local ov
   ov=$(grep -oP "^NAME_$1=\"\K[^\"]+" "$CONF" 2>/dev/null | head -1)
@@ -188,6 +191,15 @@ g4_state() { # 输出 on / off / na（na = 该机没有 sing_origin.json，无�
   [[ -f "$f" ]] || { echo na; return; }
   grep -q "\"$G4_TAG\"" "$f" 2>/dev/null && echo on || echo off
 }
+eff_family() { # 没有同进同出绑定时，按 sing-box 解析策略推断出口地址族: v4 / v6 / auto
+  local strat
+  strat=$(jq -r '.dns.strategy // ""' /etc/V2bX/sing_origin.json 2>/dev/null)
+  case "$strat" in
+    ipv4_only|prefer_ipv4) echo v4 ;;
+    ipv6_only|prefer_ipv6) echo v6 ;;
+    *) echo auto ;;
+  esac
+}
 apply_googlev4() { # $1=on|off（空或 null = 不下发）
   local want="$1" f cur ok=1
   [[ -z "$want" || "$want" == "null" || "$want" == "na" ]] && return 0
@@ -199,10 +211,13 @@ apply_googlev4() { # $1=on|off（空或 null = 不下发）
   [[ -f /etc/V2bX/sing_origin_warp.json ]] && G4_FILES+=(/etc/V2bX/sing_origin_warp.json)
   for f in "${G4_FILES[@]}"; do
     [[ -f "$f" ]] || continue
-    cp -f "$f" "${f}.bak.cloud" 2>/dev/null   # 每次改动前刷新备份，供失败回滚
+    # 只在首次应用前备份：保留真正的原始值，供 dns.strategy 精确回退与失败回滚
+    [[ -f "${f}.bak.cloud" ]] || cp -f "$f" "${f}.bak.cloud" 2>/dev/null
     if [[ "$want" == "on" ]]; then
       # 出站: 复制现有 direct 出站的 domain_resolver 并把策略改为 ipv4_only
       #（没有 domain_resolver 就退回第一个 DNS 服务器；再没有则用 domain_strategy 兜底）
+      # 另外把 dns.strategy 置为 prefer_ipv4 —— 同进同出的 node_N_out 没有独立解析器，
+      # 走的就是它，这才能让 Google/YouTube 真正落到 v4
       jq --arg tag "$G4_TAG" --argjson kw "$G4_KEYWORDS" '
         (.outbounds // []) as $o
         | ([ $o[] | select(.tag == "direct") | .domain_resolver | select(. != null) ] | first) as $dr
@@ -215,16 +230,35 @@ apply_googlev4() { # $1=on|off（空或 null = 不下发）
                 + ( if $newdr != null then { domain_resolver: $newdr } else { domain_strategy: "ipv4_only" } end )) ] )
         | .route.rules = ( [ { domain_keyword: $kw, outbound: $tag } ]
             + (( .route.rules // [] ) | map(select((.outbound // "") != $tag))) )
+        | ( if .dns then .dns.strategy = "prefer_ipv4" else . end )
       ' "$f" > "$f.tmp" 2>/dev/null && jq empty "$f.tmp" 2>/dev/null \
         && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; ok=0; }
     else
-      jq --arg tag "$G4_TAG" '
+      # 去掉出站与规则，并把 dns.strategy 恢复为首次应用前的原值（原来没有该键则删掉）
+      # 另外：原本没有 route / route.rules 的文件，去掉后不留空的 [] 结构（保证逐字节还原）
+      local orig_strat has_route has_rules
+      orig_strat=$(jq -r 'if .dns and (.dns.strategy != null) then (.dns.strategy|tostring) else "__NONE__" end' "${f}.bak.cloud" 2>/dev/null)
+      [[ -z "$orig_strat" ]] && orig_strat="__NONE__"
+      has_route=$(jq -r 'if .route != null then "true" else "false" end' "${f}.bak.cloud" 2>/dev/null)
+      has_rules=$(jq -r 'if .route.rules != null then "true" else "false" end' "${f}.bak.cloud" 2>/dev/null)
+      [[ "$has_route" == "true" ]] || has_route="false"
+      [[ "$has_rules" == "true" ]] || has_rules="false"
+      jq --arg tag "$G4_TAG" --arg os "$orig_strat" --argjson hr "$has_route" --argjson hs "$has_rules" '
         (if .outbounds then .outbounds |= map(select(.tag != $tag)) else . end)
         | (if .route.rules then .route.rules |= map(select((.outbound // "") != $tag)) else . end)
+        | (if (.route.rules // null) == [] and ($hs|not) then del(.route.rules) else . end)
+        | (if (.route // null) == {} and ($hr|not) then del(.route) else . end)
+        | (if .dns then (if $os == "__NONE__" then del(.dns.strategy) else .dns.strategy = $os end) else . end)
       ' "$f" > "$f.tmp" 2>/dev/null && jq empty "$f.tmp" 2>/dev/null \
         && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; ok=0; }
     fi
   done
+  # 同进同出绑定为 v6 的节点: 每节点规则会抢先把流量绑到 v6 出口，本文件的 v4 路由无法覆盖
+  if [[ "$want" == "on" ]]; then
+    local v6n
+    v6n=$(jq -r '[.Nodes[]? | select((.SendIP // "") | test(":"))] | length' "$CONFIG_JSON" 2>/dev/null)
+    [[ -n "$v6n" && "$v6n" != "0" ]] && log "提示: 本机 $v6n 个节点 SendIP 为 IPv6（同进同出强制 v6 出口），GoogleV4 对这些节点不生效，需把 SendIP 改成 v4"
+  fi
   if [[ "$ok" == "1" ]]; then
     G4_APPLIED=1; CHANGED=1
     log "applied GoogleV4 -> $want (files=${#G4_FILES[@]})"
@@ -259,47 +293,70 @@ push_logs() { # $1=该节点在云控上的名称
 ############################################
 # 媒体解锁检测: YouTube / ChatGPT / Netflix / Google 拉黑判定（面板按需触发）
 #   判据: Google 搜索被 302 到 /sorry/ = IP 被判定异常流量（俗称被谷歌拉黑）
+#   出口归属: 多 IP 机器上 V2bX 给每个节点生成 node_N_out 并 bind SendIP（同进同出），
+#             所以按 $2 指定的节点自身出口 IP 探测（--interface），每个节点各测各的 IP；
+#             单机/无绑定则用本机默认路径（此时若开了 GoogleV4 则用 -4）
 ############################################
-media_check() { # $1=该节点在云控上的名称
-  local name="$1" d trace ip loc yt="" gcode="" gredir="" nfcode="" gptcode="" gptloc="" ms
-  # 已强制 Google/YouTube 走 IPv4 时，探测也走 -4，与用户实际出口保持一致（否则 v6 被拉黑会一直误报）
-  local MF=""
-  [[ "$(g4_state)" == "on" ]] && MF="-4"
+media_check() { # $1=该节点在云控上的名称 $2=(可选)该节点出口 IP（SendIP）
+  local name="$1" bind="${2:-}" d trace ip loc yt="" gcode="" gredir="" nfcode="" gptcode="" gptloc="" ms
+  local IF="" MF=""
+  # 探测必须与"该节点用户实际出口"同源:
+  #   有同进同出绑定 → 绑到该节点自己的 IP，地址族由该 IP 决定（v4 IP 即强制 v4 出口）
+  #   无绑定         → 按 sing-box 的解析策略（dns.strategy）选地址族
+  if [[ -n "$bind" ]]; then
+    IF="--interface $bind"
+    if [[ "$bind" == *:* ]]; then MF="-6"; else MF="-4"; fi
+  else
+    case "$(eff_family)" in
+      v4) MF="-4" ;;
+      v6) MF="-6" ;;
+      *)  MF="" ;;
+    esac
+  fi
   ms=$(date +%s%3N 2>/dev/null || echo 0)
   d=$(mktemp -d 2>/dev/null) || return 0
-  # 并发探测（每项限时，互不阻塞）
-  # YouTube: 带 SOCS=CAI 绕过 consent 页；页面内 "GL":"XX" 即出口区域，另捕获"异常流量/sorry"提示
-  ( curl $MF -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
-  ( curl $MF -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
-  ( curl $MF -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
-  # Netflix: 跟随重定向（301 是正常地域跳转），并检查页面是否出现 "Not Available"（该区无此片源）
-  ( curl -sL --max-time 10 -o "$d/nfb" -w '%{http_code}' https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
-  ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://chatgpt.com/ > "$d/gpt" 2>/dev/null ) &
-  ( curl -s --max-time 6 https://chatgpt.com/cdn-cgi/trace > "$d/gpttr" 2>/dev/null ) &
-  trace=$(curl $MF -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
-  wait
-  ip=$(printf '%s' "$trace" | grep -m1 '^ip=' | cut -d= -f2)
-  loc=$(printf '%s' "$trace" | grep -m1 '^loc=' | cut -d= -f2)
-  yt=$(grep -o '"GL":"[A-Z][A-Z]"' "$d/yt" 2>/dev/null | head -1 | sed 's/.*"GL":"\([A-Z][A-Z]\)".*/\1/')
-  local ytbad=false
+  # 并发探测（每项限时，互不阻塞）；结果写入外层变量，便于失败后改参数重跑一次
+  probe() {
+    yt=""; gcode=""; gredir=""; nfcode=""; gptcode=""; gptloc=""; trace=""
+    # YouTube: 带 SOCS=CAI 绕过 consent 页；页面内 "GL":"XX" 即出口区域，另捕获"异常流量/sorry"提示
+    ( curl $IF $MF -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
+    ( curl $IF $MF -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
+    ( curl $IF $MF -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
+    # Netflix: 跟随重定向（301 是正常地域跳转），并检查页面是否出现 "Not Available"（该区无此片源）
+    ( curl $IF $MF -sL --max-time 10 -o "$d/nfb" -w '%{http_code}' https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
+    ( curl $IF $MF -s -o /dev/null -w '%{http_code}' --max-time 8 https://chatgpt.com/ > "$d/gpt" 2>/dev/null ) &
+    ( curl $IF -s --max-time 6 https://chatgpt.com/cdn-cgi/trace > "$d/gpttr" 2>/dev/null ) &
+    trace=$(curl $IF $MF -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    wait
+    ip=$(printf '%s' "$trace" | grep -m1 '^ip=' | cut -d= -f2)
+    loc=$(printf '%s' "$trace" | grep -m1 '^loc=' | cut -d= -f2)
+    yt=$(grep -o '"GL":"[A-Z][A-Z]"' "$d/yt" 2>/dev/null | head -1 | sed 's/.*"GL":"\([A-Z][A-Z]\)".*/\1/')
+    gcode=$(cat "$d/g" 2>/dev/null | tr -d '\n')
+    read -r gredir_code gredir_url < <(cat "$d/gb" 2>/dev/null)
+    nfcode=$(cat "$d/nf" 2>/dev/null | tr -d '\n')
+    gptcode=$(cat "$d/gpt" 2>/dev/null | tr -d '\n')
+    gptloc=$(grep -m1 '^loc=' "$d/gpttr" 2>/dev/null | cut -d= -f2)
+  }
+  probe
+  if [[ -n "$IF" && -z "$ip" ]]; then
+    # 绑定地址探测不出来（地址失效/被回收等）→ 回退默认路径重跑一次，保证检测仍能出结果
+    log "media($name): 绑定出口 $bind 探测失败，回退默认路径重试"
+    IF=""; probe
+  fi
+  local ytbad=false nfbad=false
   grep -qiE 'unusual traffic|sorry/index|detected unusual' "$d/yt" 2>/dev/null && ytbad=true
-  gcode=$(cat "$d/g" 2>/dev/null | tr -d '\n')
-  read -r gredir_code gredir_url < <(cat "$d/gb" 2>/dev/null)
-  nfcode=$(cat "$d/nf" 2>/dev/null | tr -d '\n')
-  local nfbad=false
   grep -qi 'not available' "$d/nfb" 2>/dev/null && nfbad=true
-  gptcode=$(cat "$d/gpt" 2>/dev/null | tr -d '\n')
-  gptloc=$(grep -m1 '^loc=' "$d/gpttr" 2>/dev/null | cut -d= -f2)
   rm -rf "$d"
   local gblocked=false
   printf '%s' "$gredir_url" | grep -q '/sorry/' && gblocked=true
+  [[ -z "$ip" ]] && log "media($name): 未取到出口 IP（bind=${bind:-无}）"
   local payload
   payload=$(jq -n \
-    --arg ip "${ip:-}" --arg loc "${loc:-}" \
+    --arg ip "${ip:-}" --arg loc "${loc:-}" --arg src "${bind:-}" \
     --arg yt "${yt:-}" --arg ytb "$ytbad" --arg g "${gcode:-0}" --arg gb "$gblocked" --arg gn "${gredir_code:-0}" \
     --arg nf "${nfcode:-0}" --arg nfb "$nfbad" --arg gpt "${gptcode:-0}" --arg gptloc "${gptloc:-}" \
     --argjson ms "$(( $(date +%s%3N 2>/dev/null || echo 0) - ${ms:-0} ))" \
-    '{ip:$ip, loc:$loc, ms:$ms,
+    '{ip:$ip, loc:$loc, src:$src, ms:$ms,
       youtube:{region:$yt, ok:($yt != ""), blocked:($ytb == "true")},
       google:{ok:(($g == "204") or ($gn == "200" and $gb != "true")), blocked:($gb == "true"), code:$g, search:$gn},
       netflix:{ok:($nf == "200" and $nfb != "true"), code:$nf},
@@ -323,13 +380,14 @@ G4_FILES=()
 
 for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$NO_CFG" == "1" ]]; then
-    NID=""; CUR_HOST=""; CUR_KEY=""; LIP=""; C_FILE=""; C_DOM=""; N_TYPE=""
+    NID=""; CUR_HOST=""; CUR_KEY=""; LIP=""; C_FILE=""; C_DOM=""; N_TYPE=""; SEND_IP=""
   else
     NID=$(jq -r ".Nodes[$i].NodeID // empty" "$CONFIG_JSON" 2>/dev/null)
     [[ -z "$NID" || "$NID" == "null" ]] && continue
     CUR_HOST=$(jq -r ".Nodes[$i].ApiHost // empty" "$CONFIG_JSON" 2>/dev/null)
     CUR_KEY=$(jq -r ".Nodes[$i].ApiKey // empty" "$CONFIG_JSON" 2>/dev/null)
     LIP=$(jq -r ".Nodes[$i].ListenIP // empty" "$CONFIG_JSON" 2>/dev/null)
+    SEND_IP=$(jq -r ".Nodes[$i].SendIP // empty" "$CONFIG_JSON" 2>/dev/null)
     C_FILE=$(jq -r ".Nodes[$i].CertConfig.CertFile // empty" "$CONFIG_JSON" 2>/dev/null)
     C_DOM=$(jq -r ".Nodes[$i].CertConfig.CertDomain // empty" "$CONFIG_JSON" 2>/dev/null)
     N_TYPE=$(jq -r ".Nodes[$i].NodeType // empty" "$CONFIG_JSON" 2>/dev/null)
@@ -337,6 +395,17 @@ for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$NO_CFG" == "1" ]]; then NAME_I="$BASE_NAME"; else NAME_I=$(node_name "$NID"); fi
   CONNS_I=$(node_conns "$LIP")
   cert_probe "$C_FILE" "$C_DOM"
+
+  # 该节点的真实出口 IP（媒体探测要绑到它，才等于用户实际走的 IP）:
+  # 取 SendIP —— 这正是 V2bX 同进同出给 node_N_out 绑定的地址；没有 SendIP 就说明
+  # V2bX 不绑定（用户走内核默认出口 = 本机默认路径，探测不绑即为一致）；必须是本机真实地址
+  PEIP=""
+  for cand in "${SEND_IP:-}"; do
+    [[ -z "$cand" || "$cand" == "0.0.0.0" || "$cand" == "::" ]] && continue
+    [[ "$cand" =~ ^[0-9a-fA-F:.]{3,45}$ ]] || continue
+    if [[ -n "$LOCAL_IPS" ]] && ! printf '%s\n' "$LOCAL_IPS" | grep -qxF "$cand"; then continue; fi
+    PEIP="$cand"
+  done
 
   # 该节点上一次重命名的确认（一次性上报，服务端据此迁移该节点记录）
   MARK="/tmp/.v2bx-cloud-rename-applied-${NID:-nocfg}"
@@ -469,8 +538,8 @@ for ((i=0; i<NODE_CNT; i++)); do
   # ---- 实时日志: 服务端订阅期间回传 journalctl 最新输出 ----
   [[ "$(jq -r '.log // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && push_logs "$NAME_I"
   # ---- 媒体检测: 面板按需触发（结果回传后由服务端清除标记）
-  # 推迟到配置应用之后执行，使探测的地址族与本轮新下发的 GoogleV4 策略一致
-  [[ "$(jq -r '.media // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && MEDIA_NAMES+=("$NAME_I")
+  # 推迟到配置应用之后执行，使探测的地址族与本轮新下发的 GoogleV4 策略一致；带上该节点出口 IP 做绑定
+  [[ "$(jq -r '.media // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && MEDIA_NAMES+=("${NAME_I}|${PEIP}")
 done
 
 if [[ "$HB_OK" != "1" ]]; then log "全部节点心跳失败（共 $NODE_CNT 个），跳过后续处理"; exit 0; fi
@@ -504,7 +573,7 @@ apply_googlev4 "$WANT_G4_I"
 # 媒体检测回传（推迟到配置应用之后，使探测地址族与本轮新策略一致）
 ############################################
 if [[ ${#MEDIA_NAMES[@]} -gt 0 ]]; then
-  for NAME_M in "${MEDIA_NAMES[@]}"; do media_check "$NAME_M"; done
+  for NAME_M in "${MEDIA_NAMES[@]}"; do media_check "${NAME_M%%|*}" "${NAME_M#*|}"; done
 fi
 
 ############################################
