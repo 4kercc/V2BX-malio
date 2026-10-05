@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="19"
+AGENT_VER="20"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -238,7 +238,7 @@ media_check() { # $1=该节点在云控上的名称
     --argjson ms "$(( $(date +%s%3N 2>/dev/null || echo 0) - ${ms:-0} ))" \
     '{ip:$ip, loc:$loc, ms:$ms,
       youtube:{region:$yt, ok:($yt != ""), blocked:($ytb == "true")},
-      google:{ok:($g == "204"), blocked:($gb == "true"), code:$gn},
+      google:{ok:(($g == "204") or ($gn == "200" and $gb != "true")), blocked:($gb == "true"), code:$g, search:$gn},
       netflix:{ok:($nf == "200" and $nfb != "true"), code:$nf},
       chatgpt:{ok:($gpt == "200"), code:$gpt, loc:$gptloc}}' 2>/dev/null)
   [[ -n "$payload" ]] && curl $CURL_TLS -sf --max-time 10 -X POST "$CLOUD_URL/api/media_push" \

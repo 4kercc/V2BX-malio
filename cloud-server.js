@@ -327,8 +327,8 @@ function mediaChips(n){
  const g=(m.google&&m.google.blocked)
   ?mChip('#4285F4','G','bad','拉黑','Google 搜索被跳转 /sorry/：出口 IP 被判定异常流量')
   :(m.google&&m.google.ok)
-   ?mChip('#4285F4','G','ok','','Google 正常')
-   :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · HTTP '+((m.google&&m.google.code)||'-'));
+   ?mChip('#4285F4','G','ok','','Google 正常（generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-')+'）')
+   :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · generate_204='+((m.google&&m.google.code)||'-')+' · 搜索='+((m.google&&m.google.search)||'-'));
  const ai=(m.chatgpt&&m.chatgpt.ok)
   ?mChip('#10A37F',GLYPH_GPT,'ok','','ChatGPT 可用')
   :mChip('#10A37F',GLYPH_GPT,'warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):''));
@@ -1462,7 +1462,7 @@ const handler = async (req, res) => {
       at: Date.now(),
       ip: clip(m.ip), loc: clip(m.loc), ms: Number(m.ms) || 0,
       youtube: { ok: !!(m.youtube && m.youtube.ok), region: clip(m.youtube && m.youtube.region), blocked: !!(m.youtube && m.youtube.blocked) },
-      google: { ok: !!(m.google && m.google.ok), blocked: !!(m.google && m.google.blocked), code: clip(m.google && m.google.code) },
+      google: { ok: !!(m.google && m.google.ok), blocked: !!(m.google && m.google.blocked), code: clip(m.google && m.google.code), search: clip(m.google && m.google.search) },
       netflix: { ok: !!(m.netflix && m.netflix.ok), code: clip(m.netflix && m.netflix.code) },
       chatgpt: { ok: !!(m.chatgpt && m.chatgpt.ok), code: clip(m.chatgpt && m.chatgpt.code), loc: clip(m.chatgpt && m.chatgpt.loc) }
     };
