@@ -93,6 +93,9 @@ table{width:100%;border-collapse:collapse;font-size:13px;min-width:1040px}
 th{background:hsl(var(--muted));color:hsl(var(--muted-fg));font-weight:500;text-align:left;padding:9px 10px;white-space:nowrap}
 td{padding:10px;border-top:1px solid hsl(var(--border));vertical-align:top}
 tbody tr:hover{background:hsl(var(--accent)/.5)}
+tbody tr.selrow{background:hsl(var(--primary)/.14)}
+tbody tr.selrow:hover{background:hsl(var(--primary)/.22)}
+.ncard.selrow{border-color:hsl(var(--primary)/.6)}
 .badge{display:inline-flex;align-items:center;border-radius:9999px;padding:2px 9px;font-size:11px;font-weight:600;border:1px solid transparent;white-space:nowrap}
 .b-ok{background:hsl(var(--ok)/.12);color:hsl(var(--ok));border-color:hsl(var(--ok)/.35)}
 .b-info{background:hsl(var(--info)/.12);color:hsl(var(--info));border-color:hsl(var(--info)/.35)}
@@ -170,7 +173,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
 <div id="msg"></div>
 
 <div class="card">
- <p class="card-title">节点列表 <span class="muted" id="cnt2" style="font-weight:400"></span></p>
+ <p class="card-title">节点列表 <span class="muted" id="cnt2" style="font-weight:400"></span> <span class="muted" style="font-weight:400;font-size:12px">· 双击任意一行可快速勾选/取消</span></p>
  <div class="row" style="margin:0 0 10px">
   <select id="groupFilter" onchange="render()" style="width:auto;min-width:140px">
    <option value="">全部分组</option>
@@ -576,7 +579,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
  (n.desired?'<div class="small" style="margin-top:6px">待下发: '+esc(JSON.stringify(n.desired))+'</div>':'')+
  '</div>').join('');
- document.querySelectorAll('.sel').forEach(x=>{x.checked=keepSel.has(decodeURIComponent(x.value));});
+ document.querySelectorAll('.sel').forEach(x=>{markSel(x,keepSel.has(decodeURIComponent(x.value)));});
  const all=[...document.querySelectorAll('.sel')];
  const sa=document.getElementById('selAll');if(sa)sa.checked=all.length>0&&all.every(x=>x.checked);
  // 表头排序指示符（▲/▼，未激活时显示淡色 ⇅ 提示可点）
@@ -706,6 +709,14 @@ function onTargetGroupChange(){
  if(g&&g!=='__none__'&&gf&&gf.value!==g){gf.value=g;render();}
  updateTargetHint();
 }
+// 勾选状态与行高亮同步（桌面表格 tr / 手机卡片 .ncard 两套视图共用）
+function markSel(cb,on){
+ if(cb)cb.checked=!!on;
+ var host=cb&&(cb.closest('tr')||cb.closest('.ncard'));
+ if(host)host.classList.toggle('selrow',!!on);
+}
+function setSel(cb,on){ if(!cb)return; markSel(cb,on);
+ document.querySelectorAll('.sel').forEach(function(x){if(x!==cb&&x.value===cb.value)markSel(x,on);});}
 // 勾选目标去重: 桌面表格与移动卡片各有一套 checkbox，同一节点可能被勾两次
 // （不去重会导致"只选 1 台"被误判成批量下发，从而拦掉 NodeID 这类差异化字段）
 function targets(){
@@ -840,7 +851,14 @@ function wireNodeList(id){var el=document.getElementById(id);
  el.addEventListener('dblclick',function(e){
   var a=e.target.closest('a.nlink');
   if(a){e.preventDefault();if(tmr){clearTimeout(tmr);tmr=null;}
-   renameNode(a.dataset.key,decodeURIComponent(a.dataset.name));}});}
+   renameNode(a.dataset.key,decodeURIComponent(a.dataset.name));return;}
+  // 双击行内任意空白处 = 勾选/取消该行（按钮/链接/输入框除外），免去精确点小复选框
+  if(e.target.closest('button,a,input,label,select'))return;
+  var host=e.target.closest('tr')||e.target.closest('.ncard');if(!host)return;
+  var cb=host.querySelector('input.sel');if(!cb)return;
+  setSel(cb,!cb.checked);});
+ el.addEventListener('change',function(e){
+  var c=e.target.closest('input.sel');if(c)markSel(c,c.checked);});}
 wireNodeList('tb');wireNodeList('mc');
 // 重复检查弹窗里的删除按钮（事件委托，避免内联拼接用户数据）
 document.getElementById('modalBox').addEventListener('click',function(e){
@@ -853,7 +871,7 @@ document.getElementById('modalBox').addEventListener('click',function(e){
    show('✓ 已删除 1 条记录');closeModal();refresh();});
  });
 });
-function toggleAll(cb){document.querySelectorAll('.sel').forEach(function(x){x.checked=cb.checked;});}
+function toggleAll(cb){document.querySelectorAll('.sel').forEach(function(x){markSel(x,cb.checked);});}
 </script>
 </body>
 </html>`;
