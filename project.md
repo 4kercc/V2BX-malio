@@ -71,6 +71,42 @@
   - Agent 读取 `<CertFile>.acme-fallback` 并在心跳中上报 `cert.fallback/fallbackAt/fallbackError`，证书探测路径补 `/etc/V2bX/cert/<domain>/fullchain.pem`；
   - 面板对"ACME 失败降级"发事件 + Telegram/Webhook 告警，节点列表/卡片显示 `自签·ACME失败`（有意配置的自签只显示 `自签`，不告警）。
 
+### 5. 云控中心（`cloud-server.js` + `cloud-agent*.sh`）
+
+云控为独立于 V2bX 主程序的自研部分：控制中心（`203.88.114.11`，服务 `v2bx-cloud`，HTTPS `token.mx.mk:8765`）**无法主动连节点**，节点侧 agent 靠心跳 + `/api/wait` 长轮询拉取指令（管理端下发即唤醒，秒级送达）。
+
+**（1）Google/YouTube 强制 IPv4 下发（GoogleV4 字段）**
+
+* **背景**：部分机房 IPv6 直连出口被 Google 判定异常（搜索 302 跳 `/sorry/`），YouTube 打不开。
+* **做法**：agent 改节点 `/etc/V2bX/sing_origin.json`（同时改 `sing_origin_direct.json` / `sing_origin_warp.json`，避免切 WARP 后补丁丢失）——插入直连出站 `v4-google`（`domain_resolver.strategy=ipv4_only`，server 复制现有 `direct` 出站的解析器）+ 前置 `domain_keyword`（google/youtube 系）路由，并把 `dns.strategy` 置为 `prefer_ipv4`。
+* **安全网**：只在首次应用前备份、`jq` 校验、`systemctl restart V2bX` 后 2 秒查活性，起不来自动回滚再重启；`off` 按备份逐字节还原（含 `dns.strategy` 原值、原本没有的 `route`/`rules` 结构），已用 7 种文件结构变异做往返测试验证一致。
+* **注意**：多 IP 机器上 V2bX 自动生成的"每节点出站规则"（`node_N_out` + `bind_address=SendIP`）是 **prepend**，优先于文件里的规则——这类节点的用户流量本就按 `SendIP`(v4)+`prefer_ipv4` 走 IPv4，文件规则是兜底；`SendIP` 为 IPv6 的节点会强制 v6 出口，文件规则覆盖不了（agent 会写日志告警）。
+* **面板对照**：批量下发区「Google/YT 出口」下拉（强制 IPv4 / 恢复默认），可批量（整机字段）；开启后媒体标签显示绿色 `v4·强制`，悬停可看到绑定信息与"已强制"说明。
+
+**（2）媒体解锁检测：按节点真实出口 IP 探测**
+
+* **判据**：YouTube 带 `Cookie: SOCS=CAI` 取页面 `"GL":"XX"`；Google 用 `generate_204` + 搜索是否 302 跳 `/sorry/`（拉黑）；Netflix `-L` 跟随跳转并检查 `Not Available`；ChatGPT 看 HTTP 码 + `cdn-cgi/trace` 的 loc。
+* **出口归属（关键）**：多 IP 机器上 V2bX 给每个节点生成 `node_N_out` 并绑 `SendIP`（同进同出），因此探测用 `curl --interface <该节点 SendIP>`，**一台机器上的多个节点各测各的 IP**；无 `SendIP` 的机器不绑定（用户走内核默认出口，不绑即为一致），地址族按 `dns.strategy` 选择。绑定前校验该地址在本机存在，绑定取不到结果自动回退默认路径重试一次。
+* **结果新鲜度**：payload 带 `pv`（探测逻辑版本 `MEDIA_PV`），服务端 `MEDIA_PV` 同步提升后旧结果立即失效并自动补测（10 分钟退避）——避免"探测逻辑升级了、面板还挂着旧数据装正常"。另有 12 小时 TTL 自动补测。
+* **面板呈现**：列表两行两列品牌图标 + `✓/✗(原因)`，末尾 v4/v6 出口协议标签；媒体检测弹窗显示出口 IP/归属地/「绑定」徽标；悬停显示完整出口 IP、绑定源与规则说明。结果入库 `src`/`pv` 字段（曾漏存 `src` 导致绑定信息显示不出来）。
+* **实测结论**：数据中心 IP 的 ChatGPT 403 属正常；"Google 拉黑"最初 6 台全部是**本机默认路径（IPv6）**的假警报，按节点出口探测后各自 v4 均为正常；机队 5 台多节点机器全部实现"各节点各出各的 IP"。
+
+**（3）Agent 版本与自更新机制**
+
+* 面板说的 v2x 是**云控 agent 版本**（`cloud-agent.sh` 的 `AGENT_VER`），与节点上 V2bX 程序版本（列表「版本」列）无关；V2bX 升级走「升级选中」。
+* 铺开流程：改完代码 `git push` → 面板「⚙ 全局设置 → Agent 目标版本」+1；节点心跳上报 `agentVer`，服务端发现低于目标就回 `agentUpdate:1`，agent 自 GitHub 拉取并原地替换（`bash -n` + 必须含 AGENT_VER + **下载版本必须更高**才覆盖），全网 1~2 分钟收敛，**无需逐台 SSH**。
+* **两个硬教训**：① 自更新分支必须在 agent 最末尾——它 `exit 0`，曾抢在"配置变更重启"之前，导致改动写进文件却不重启、悬空不生效；② raw.githubusercontent.com 对分支有 300 秒 CDN 缓存，刚推的新版可能被旧版顶回，必须做版本比对防降级/防空转。
+* 版本记录：**v21** 新增 GoogleV4；**v22/v23** 修自更新顺序与防降级；**v24** 媒体探测绑 `SendIP` + 上报 `src` + GoogleV4 补 `dns.strategy`；**v25** 新增 `MEDIA_PV` 探测版本号。
+* 依赖说明：机器不可达/agent 没在跑的节点（如长期离线节点）无法自更新，需上机重跑 `cloud-agent-update.sh`（不带参数=已装则更新 agent+守护+cron），起来后会自动追到目标版本。
+
+**（4）面板交互增强**
+
+* **按分组批量操作**：批量下发区「目标分组」下拉（含"未分组"）；选中后 `targets()` 直接返回整组，下发/重启/升级/清除期望配置/删除/证书到期/媒体检测**全部作用于整组**（勾选被忽略），列表视图自动过滤到该分组并提示"共 N 台（在线 M 台）"。证书/媒体检测由原来的"未勾选=全部"改为分组优先，避免误伤全队。
+* **行双击勾选**：鼠标在任意行内双击即勾选/取消该行（按钮/链接/输入框除外），选中行高亮（`tr.selrow`/`.ncard.selrow`），桌面表格与手机卡片勾选态同步；双击节点名仍是重命名（原行为不变）。
+* **「面板 / 节点ID」列自动换行**：去掉省略号截断，长域名徽标整块折行、超长 token 可断行；该列 `th` 设 `min-width:200px`（否则 table-layout:auto 会把列压到 88px，导致所有单元格折成 5 行）。
+* **节点类型固定 anytls**：面板不再提供类型切换（安装脚本默认与兜底均为 anytls）；服务端 `NODE_TYPES` 校验与 `NodeType` 单台下发能力保留（脚本可用 API 纠正历史遗留），列表对非 anytls 节点标黄提示。
+* **登录页**：表单保留「账号(username) + 管理 Token(password)」两字段以兼容密码管理器（Bitwarden 等）的内联填充图标，但页面上不再显示解释文案；实际校验的始终是管理 Token，会话 Cookie 只在内存（服务重启即失效，用 `?token=` 重新登录）。
+
 ---
 
 ## 三、常用运维与升级命令汇总
@@ -96,3 +132,11 @@
    v2bx warp off      # 禁用 WARP 分流（全走原生 IP，省 40MB 内存）
    v2bx warp on       # 启用 WARP 分流（含自动回落）
    ```
+5. **云控 agent（节点侧）排查与升级**：
+   ```bash
+   grep -m1 AGENT_VER= /usr/local/V2bX/cloud-agent.sh      # 当前 agent 版本
+   journalctl -t v2bx-cloud -n 30                          # agent 日志（含 applied GoogleV4 / self-update / media 等）
+   bash cloud-agent-update.sh                              # 不带参数：已装则更新 agent+守护+cron（不重装）
+   ```
+6. **云控全网铺开 agent 新版本**：代码 `git push` 后，面板「⚙ 全局设置 → Agent 目标版本」填新版本号即可；节点心跳发现落后会自拉更新（1~2 分钟），查落后节点看节点详情里的 `Agent vX`。
+7. **云控媒体检测即席复测**：面板勾选节点（或选「目标分组」）→「🌐 媒体检测」；探测按各节点自己的出口 IP 进行，悬停图标可见出口 IP / 绑定源。
