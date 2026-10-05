@@ -64,6 +64,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud
 | **换面板地址**（网站迁移） | 填 ApiHost → 勾选节点或"下发到全部" → ≤2 分钟全部生效 |
 | 改密钥/节点ID/证书域名 | 同上，对应字段即可 |
 | WARP 批量开关 | 下拉选开/关 → 下发 |
+| **Google/YT 强制 IPv4** | 用于 IPv6 出口被 Google 拉黑（搜索跳 `/sorry/`）的节点：下拉选"强制 IPv4" → 下发；整机改 `sing_origin.json` 并重启 V2bX，选"恢复默认（不强制）"一键还原 |
 | 一键重启/一键升级 | 对应按钮，动作在节点下次心跳时执行 |
 | 撤销未应用的配置 | "清除期望配置" |
 
@@ -73,6 +74,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud
 - **配置修改不破坏其他内容**：agent 用字段级 sed 只改目标字段，config.json 里的监听 IP、证书路径、内核配置等一概不动；
 - **三重防呆**：修改前自动备份（`config.json.bak.cloud`）→ 修改后 `jq` 校验 JSON，失败自动回滚备份，**绝不带病重启** → 改 CertDomain 时若新域名无证书，自动生成 10 年自签兜底，节点不会重启即挂；
 - 节点身份 = `NODE_NAME + 出口IP`，控制中心自动登记新节点；
+- **媒体检测按"该节点真实出口 IP"探测**：多 IP 机器上 V2bX 会给每个节点生成 `node_N_out` 并绑定它的 `SendIP`（同进同出），面板即用 `curl --interface <该节点 SendIP>` 探测，**一台机器上的多个节点各测各的 IP**（悬停媒体图标可见"探测绑定节点出口 x.x.x.x"）；单节点/未配置 SendIP 的机器不绑定（用户走内核默认出口，探测不绑即为一致），地址族按节点 sing-box 的 `dns.strategy` 选择；
+- **Google/YT 强制 IPv4（GoogleV4）**：agent 改 `/etc/V2bX/sing_origin.json`（同时改 WARP/直连两个模板，避免切 WARP 后补丁丢失）：插入直连出站 `v4-google`（`domain_resolver.strategy=ipv4_only`）+ 前置 Google/YouTube 域名路由，并把 `dns.strategy` 置为 `prefer_ipv4`；改前备份、`jq` 校验、重启后 2 秒活性检查，起不来自动回滚（`off` 按备份逐字节还原）。注意：多 IP 机器上 V2bX 自动生成的"每节点出站规则"**优先于**文件里的规则，这类节点的用户流量本来就按 `SendIP`(v4)+`prefer_ipv4` 走 IPv4；
 - 心跳失败自动跳过本轮，不影响 V2bX 运行；agent 全程 `flock` 防并发；
 - agent 日志进 journald：`journalctl -t v2bx-cloud`；升级日志：`/var/log/v2bx-cloud-update.log`；
 - 手动测试 agent：`/usr/local/V2bX/cloud-agent.sh && journalctl -t v2bx-cloud -n 5`。
