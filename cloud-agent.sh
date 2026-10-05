@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="20"
+AGENT_VER="21"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -175,6 +175,66 @@ apply_node() { # $1=NodeID $2=jq路径 $3=期望值 $4=当前值 —— 只改�
 }
 
 ############################################
+# Google/YouTube 强制 IPv4 出站（整机改动）
+#   背景: 部分机房 IPv6 直连出口被 Google 判定异常流量（搜索 302 跳 /sorry/）
+#   做法: 在 sing-box 基础配置里插入专用直连出站 v4-google（DNS 策略 ipv4_only），
+#         并把 Google/YouTube 域名路由到它；规则插在最前，优先于兜底与 WARP 规则
+#   范围: sing_origin.json 为该机全部节点共用 → 整机生效；改完需重启 V2bX
+############################################
+G4_TAG="v4-google"
+G4_KEYWORDS='["google","googlevideo","youtube","ytimg","ggpht","gstatic","googleapis","googleusercontent","withgoogle"]'
+g4_state() { # 输出 on / off / na（na = 该机没有 sing_origin.json，无法应用）
+  local f="/etc/V2bX/sing_origin.json"
+  [[ -f "$f" ]] || { echo na; return; }
+  grep -q "\"$G4_TAG\"" "$f" 2>/dev/null && echo on || echo off
+}
+apply_googlev4() { # $1=on|off（空或 null = 不下发）
+  local want="$1" f cur ok=1
+  [[ -z "$want" || "$want" == "null" || "$want" == "na" ]] && return 0
+  [[ -f /etc/V2bX/sing_origin.json ]] || { log "GoogleV4=$want: 未找到 sing_origin.json(未安装 V2bX)，跳过"; return 0; }
+  cur=$(g4_state)
+  [[ "$want" == "$cur" ]] && return 0
+  G4_FILES=(/etc/V2bX/sing_origin.json)
+  [[ -f /etc/V2bX/sing_origin_direct.json ]] && G4_FILES+=(/etc/V2bX/sing_origin_direct.json)
+  [[ -f /etc/V2bX/sing_origin_warp.json ]] && G4_FILES+=(/etc/V2bX/sing_origin_warp.json)
+  for f in "${G4_FILES[@]}"; do
+    [[ -f "$f" ]] || continue
+    cp -f "$f" "${f}.bak.cloud" 2>/dev/null   # 每次改动前刷新备份，供失败回滚
+    if [[ "$want" == "on" ]]; then
+      # 出站: 复制现有 direct 出站的 domain_resolver 并把策略改为 ipv4_only
+      #（没有 domain_resolver 就退回第一个 DNS 服务器；再没有则用 domain_strategy 兜底）
+      jq --arg tag "$G4_TAG" --argjson kw "$G4_KEYWORDS" '
+        (.outbounds // []) as $o
+        | ([ $o[] | select(.tag == "direct") | .domain_resolver | select(. != null) ] | first) as $dr
+        | ([ (.dns.servers // [])[] | .tag | select(. != null and . != "") ] | first) as $srv
+        | ( if $dr != null then ($dr + { strategy: "ipv4_only" })
+            elif $srv != null then { server: $srv, strategy: "ipv4_only" }
+            else null end ) as $newdr
+        | .outbounds = ( ($o | map(select(.tag != $tag)))
+            + [ ({ tag: $tag, type: "direct" }
+                + ( if $newdr != null then { domain_resolver: $newdr } else { domain_strategy: "ipv4_only" } end )) ] )
+        | .route.rules = ( [ { domain_keyword: $kw, outbound: $tag } ]
+            + (( .route.rules // [] ) | map(select((.outbound // "") != $tag))) )
+      ' "$f" > "$f.tmp" 2>/dev/null && jq empty "$f.tmp" 2>/dev/null \
+        && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; ok=0; }
+    else
+      jq --arg tag "$G4_TAG" '
+        (if .outbounds then .outbounds |= map(select(.tag != $tag)) else . end)
+        | (if .route.rules then .route.rules |= map(select((.outbound // "") != $tag)) else . end)
+      ' "$f" > "$f.tmp" 2>/dev/null && jq empty "$f.tmp" 2>/dev/null \
+        && mv -f "$f.tmp" "$f" || { rm -f "$f.tmp"; ok=0; }
+    fi
+  done
+  if [[ "$ok" == "1" ]]; then
+    G4_APPLIED=1; CHANGED=1
+    log "applied GoogleV4 -> $want (files=${#G4_FILES[@]})"
+  else
+    log "GoogleV4=$want 应用失败(jq)，已回滚本次改动"
+    for f in "${G4_FILES[@]}"; do [[ -f "${f}.bak.cloud" ]] && cp -f "${f}.bak.cloud" "$f"; done
+  fi
+}
+
+############################################
 # 实时日志: 服务端订阅期间回传 V2bX 最新日志（近似 tail -f）
 ############################################
 push_logs() { # $1=该节点在云控上的名称
@@ -202,18 +262,21 @@ push_logs() { # $1=该节点在云控上的名称
 ############################################
 media_check() { # $1=该节点在云控上的名称
   local name="$1" d trace ip loc yt="" gcode="" gredir="" nfcode="" gptcode="" gptloc="" ms
+  # 已强制 Google/YouTube 走 IPv4 时，探测也走 -4，与用户实际出口保持一致（否则 v6 被拉黑会一直误报）
+  local MF=""
+  [[ "$(g4_state)" == "on" ]] && MF="-4"
   ms=$(date +%s%3N 2>/dev/null || echo 0)
   d=$(mktemp -d 2>/dev/null) || return 0
   # 并发探测（每项限时，互不阻塞）
   # YouTube: 带 SOCS=CAI 绕过 consent 页；页面内 "GL":"XX" 即出口区域，另捕获"异常流量/sorry"提示
-  ( curl -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
-  ( curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
-  ( curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
+  ( curl $MF -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
+  ( curl $MF -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
+  ( curl $MF -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
   # Netflix: 跟随重定向（301 是正常地域跳转），并检查页面是否出现 "Not Available"（该区无此片源）
   ( curl -sL --max-time 10 -o "$d/nfb" -w '%{http_code}' https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
   ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://chatgpt.com/ > "$d/gpt" 2>/dev/null ) &
   ( curl -s --max-time 6 https://chatgpt.com/cdn-cgi/trace > "$d/gpttr" 2>/dev/null ) &
-  trace=$(curl -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+  trace=$(curl $MF -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
   wait
   ip=$(printf '%s' "$trace" | grep -m1 '^ip=' | cut -d= -f2)
   loc=$(printf '%s' "$trace" | grep -m1 '^loc=' | cut -d= -f2)
@@ -253,6 +316,10 @@ cp -f "$CONFIG_JSON" "$CONFIG_JSON.bak.cloud" 2>/dev/null || true
 CHANGED=0; HB_OK=0
 DO_RESTART=0; DO_UPDATE=0; DO_UPDATE_VER=""; DO_AGENT_UPDATE=0
 WANT_WARP_I=""
+WANT_G4_I=""
+MEDIA_NAMES=()
+G4_APPLIED=0
+G4_FILES=()
 
 for ((i=0; i<NODE_CNT; i++)); do
   if [[ "$NO_CFG" == "1" ]]; then
@@ -285,12 +352,12 @@ for ((i=0; i<NODE_CNT; i++)); do
     --argjson cDays "${CERT_DAYS:-null}" --argjson cSelf "${CERT_SELF:-false}" \
     --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "${NID:-0}" \
     --arg apiHost "$CUR_HOST" --arg apiKey "$CUR_KEY" --arg certDomain "$C_DOM" --arg cName "$NAME_I" \
-    --arg nodeType "$N_TYPE" \
+    --arg nodeType "$N_TYPE" --arg googleV4 "$(g4_state)" \
     '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
       warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
       cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf},
       appliedRename:$appliedRename, nodeCount:$nodeCount, nodeId:$nodeId,
-      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType}}' 2>/dev/null)
+      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType, GoogleV4:$googleV4}}' 2>/dev/null)
   if [[ -z "$PAYLOAD" ]]; then log "node $NID: payload 构建失败"; continue; fi
 
   RESP=$(curl $CURL_TLS -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
@@ -353,6 +420,10 @@ for ((i=0; i<NODE_CNT; i++)); do
   W=$(jq -r '.desired.Warp // empty' <<<"$RESP" 2>/dev/null)
   [[ -n "$W" && "$W" != "null" ]] && WANT_WARP_I="$W"
 
+  # Google/YouTube 强制 IPv4（全局，取本机任一节点下发的值）
+  G=$(jq -r '.desired.GoogleV4 // empty' <<<"$RESP" 2>/dev/null)
+  [[ -n "$G" && "$G" != "null" ]] && WANT_G4_I="$G"
+
   # ---- 重命名（按 NodeID 记入 cloud.conf，下次心跳生效） ----
   WANT_NAME=$(jq -r '.desiredName // empty' <<<"$RESP" 2>/dev/null)
   if [[ -n "$WANT_NAME" && "$WANT_NAME" != "$NAME_I" ]]; then
@@ -397,8 +468,9 @@ for ((i=0; i<NODE_CNT; i++)); do
 
   # ---- 实时日志: 服务端订阅期间回传 journalctl 最新输出 ----
   [[ "$(jq -r '.log // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && push_logs "$NAME_I"
-  # ---- 媒体检测: 面板按需触发（结果回传后由服务端清除标记） ----
-  [[ "$(jq -r '.media // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && media_check "$NAME_I"
+  # ---- 媒体检测: 面板按需触发（结果回传后由服务端清除标记）
+  # 推迟到配置应用之后执行，使探测的地址族与本轮新下发的 GoogleV4 策略一致
+  [[ "$(jq -r '.media // empty' <<<"$RESP" 2>/dev/null)" == "1" ]] && MEDIA_NAMES+=("$NAME_I")
 done
 
 if [[ "$HB_OK" != "1" ]]; then log "全部节点心跳失败（共 $NODE_CNT 个），跳过后续处理"; exit 0; fi
@@ -424,12 +496,29 @@ if [[ -n "$WANT_WARP_I" && "$WANT_WARP_I" != "$WARP" ]]; then
 fi
 
 ############################################
+# Google/YouTube 强制 IPv4（整机，跟在 WARP 模板切换之后应用，避免被模板覆盖）
+############################################
+apply_googlev4 "$WANT_G4_I"
+
+############################################
+# 媒体检测回传（推迟到配置应用之后，使探测地址族与本轮新策略一致）
+############################################
+if [[ ${#MEDIA_NAMES[@]} -gt 0 ]]; then
+  for NAME_M in "${MEDIA_NAMES[@]}"; do media_check "$NAME_M"; done
+fi
+
+############################################
 # JSON 校验：改坏了自动回滚，绝不带病重启
 ############################################
 if [[ "$CHANGED" == "1" ]] && ! jq empty "$CONFIG_JSON" 2>/dev/null; then
   cp -f "$CONFIG_JSON.bak.cloud" "$CONFIG_JSON"
   CHANGED=0
   log "config.json 校验失败，已回滚到修改前备份"
+fi
+if [[ "$G4_APPLIED" == "1" ]] && ! jq empty /etc/V2bX/sing_origin.json 2>/dev/null; then
+  for f in "${G4_FILES[@]}"; do [[ -f "${f}.bak.cloud" ]] && cp -f "${f}.bak.cloud" "$f"; done
+  G4_APPLIED=0; CHANGED=0
+  log "sing_origin.json 校验失败，已回滚 GoogleV4 改动"
 fi
 
 ############################################
@@ -468,7 +557,20 @@ if [[ "$DO_AGENT_UPDATE" == "1" ]]; then
 fi
 
 if [[ "$CHANGED" == "1" ]]; then
-  systemctl restart V2bX && log "config changed, V2bX restarted (nodes=$NODE_CNT)"
+  if systemctl restart V2bX 2>/dev/null; then
+    sleep 2
+    # GoogleV4 改了 sing-box 基础配置：起不来就回滚并再重启（绝不留下起不来的节点）
+    if [[ "$G4_APPLIED" == "1" ]] && ! systemctl is-active V2bX >/dev/null 2>&1; then
+      log "V2bX 重启后未运行，回滚 GoogleV4 改动并再次重启"
+      for f in "${G4_FILES[@]}"; do [[ -f "${f}.bak.cloud" ]] && cp -f "${f}.bak.cloud" "$f"; done
+      systemctl restart V2bX 2>/dev/null
+      echo "googlev4-rollback $(date +%s)" > /tmp/.v2bx-cloud-ack
+    else
+      log "config changed, V2bX restarted (nodes=$NODE_CNT)"
+    fi
+  else
+    log "config changed, 但 restart 命令失败（服务单元缺失？）"
+  fi
 else
   log "heartbeat ok (nodes=$NODE_CNT, no change)"
 fi

@@ -141,6 +141,11 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <input id="fNodeId" placeholder="NodeID (数字)">
   <input id="fDomain" placeholder="CertDomain">
   <select id="fWarp"><option value="">WARP 不变</option><option value="on">WARP 开</option><option value="off">WARP 关</option></select>
+  <select id="fG4" title="Google/YouTube 强制 IPv4 出站：改节点 sing_origin.json 的 sing-box 路由（整机生效，会重启 V2bX）。用于 IPv6 出口被 Google 拉黑（搜索跳 /sorry/）的节点；开启后面板媒体检测也同步改用 IPv4 探测">
+   <option value="">Google/YT 出口 不变</option>
+   <option value="on">Google/YT 强制 IPv4</option>
+   <option value="off">恢复默认（不强制）</option>
+  </select>
   <select id="fType" title="节点类型（与面板里该节点的类型必须一致；仅支持单台下发）">
    <option value="">节点类型 不变</option>
    <option value="anytls">anytls</option>
@@ -166,7 +171,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-outline btn-sm" onclick="showDups()" title="检查同名不同机 / 同面板同 NodeID 的重复节点">🔍 重复检查</button>
   <button class="btn btn-outline btn-sm" onclick="showMedia()" title="检测 YouTube / ChatGPT / Netflix / Google 拉黑（未勾选则检测全部）">🌐 媒体检测</button>
  </div>
- <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启</p>
+ <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启 · Google/YT 强制 IPv4 与 WARP 均为整机改动（同机多节点共用 sing_origin.json，改后整机重启一次 V2bX）</p>
 </div>
 <div id="msg"></div>
 
@@ -321,7 +326,8 @@ function mediaChips(n){
  if(!m||!m.at)return '<span class="muted" style="font-size:11px">待检测</span>';
  const ip=String(m.ip||'');
  const is6=ip.indexOf(':')>=0;
- const famTip=ip?('出口 '+(is6?'IPv6':'IPv4')+'：'+ip+(m.loc?(' · '+m.loc):'')):'出口 IP 未知';
+ const g4on=String((n.info&&n.info.cfg&&n.info.cfg.GoogleV4)||'')==='on';
+ const famTip=ip?('出口 '+(is6?'IPv6':'IPv4')+'：'+ip+(m.loc?(' · '+m.loc):'')+(g4on?' · 已强制 Google/YT 走 IPv4（sing-box 路由）':'')):'出口 IP 未知';
  const yt=(m.youtube&&m.youtube.blocked)
   ?mChip('#FF0000',GLYPH_YT,'bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑 · '+famTip)
   :(m.youtube&&m.youtube.ok)
@@ -399,8 +405,9 @@ function renderMediaModal(list,q,all){
   if(!fresh)pending++;
   if(!m||!m.at)return '<tr><td>'+esc(n.name)+'</td><td colspan="3" class="muted">等待节点回传…（离线节点不会回传）</td></tr>';
   const c=mediaCell(m);
+  const g4on=String((n.info&&n.info.cfg&&n.info.cfg.GoogleV4)||'')==='on';
   if(!fresh)return '<tr><td>'+esc(n.name)+'</td><td colspan="3" class="muted">检测中…（上次结果：'+esc(c.ip)+' · '+c.at+'）</td></tr>';
-  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span></td><td>'+mediaChips(n)+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
+  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span>'+(g4on?' <span class="badge b-mut" style="font-size:10px" title="节点侧 sing-box 已把 Google/YouTube 路由到 IPv4 直连出站（本行探测也为 IPv4）">Google走v4</span>':'')+'</td><td>'+mediaChips(n)+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
  }).join('');
  const st=document.getElementById('mediaStatus');
  if(st)st.textContent=(all?'未勾选节点，已检测全部 ':'已检测 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回传…'):'✓ 全部已回传');
@@ -415,7 +422,7 @@ async function showMedia(){
  if(d.error){show('被拒绝: '+d.error);return;}
  const q=d.queryAt||Date.now();
  document.getElementById('modalBox').innerHTML='<h3>🌐 媒体解锁检测</h3>'
-  +'<div class="muted small" style="margin-bottom:6px">图标：<span style="color:#FF0000">▶</span> YouTube · <span style="color:#4285F4">G</span> Google · <span style="color:#10A37F">AI</span> ChatGPT · <span style="color:#E50914">N</span> Netflix　（✓ 可用 · ✗ 不可用 · ? 受限/需登录）· 每 12 小时自动检测一次</div>'
+  +'<div class="muted small" style="margin-bottom:6px">图标：<span style="color:#FF0000">▶</span> YouTube · <span style="color:#4285F4">G</span> Google · <span style="color:#10A37F">AI</span> ChatGPT · <span style="color:#E50914">N</span> Netflix　（✓ 可用 · ✗ 不可用 · ? 受限/需登录）· 每 12 小时自动检测一次 · 图标下 v4/v6 为探测出口协议（节点开了「Google/YT 强制 IPv4」时探测也走 IPv4）</div>'
   +'<div style="max-height:52vh;overflow:auto"><table style="min-width:620px"><thead><tr><th>节点</th><th>出口 IP</th><th>流媒体</th><th>检测时间</th></tr></thead><tbody id="mediaTb"></tbody></table></div>'
   +'<div class="foot" id="mediaStatus" style="margin-top:6px"></div>'
   +'<div style="margin-top:10px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mediaAgain">重新检测</button>'
@@ -677,7 +684,7 @@ function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.te
 // 勾选目标去重: 桌面表格与移动卡片各有一套 checkbox，同一节点可能被勾两次
 // （不去重会导致"只选 1 台"被误判成批量下发，从而拦掉 NodeID 这类差异化字段）
 function targets(){const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
-function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fType','NodeType']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
+function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fType','NodeType'],['fG4','GoogleV4']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
@@ -1138,7 +1145,7 @@ function readBody(req) {
 }
 function pickCfg(cfg) {
   const out = {};
-  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp', 'NodeType']) {
+  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp', 'NodeType', 'GoogleV4']) {
     if (cfg && cfg[k] !== undefined && cfg[k] !== null && cfg[k] !== '') out[k] = cfg[k];
   }
   return out;
@@ -1278,7 +1285,7 @@ const handler = async (req, res) => {
       const same = (k, actual) => !(k in want) || norm(want[k]) === norm(actual);
       if (same('ApiHost', cur.ApiHost) && same('ApiKey', cur.ApiKey) && same('NodeID', cur.NodeID)
           && same('CertDomain', cur.CertDomain) && same('Warp', rec.info.warp)
-          && same('NodeType', cur.NodeType)) { // 注意: 所有可下发字段都必须参与判定，漏一个会导致下发被提前清空
+          && same('NodeType', cur.NodeType) && same('GoogleV4', cur.GoogleV4)) { // 注意: 所有可下发字段都必须参与判定，漏一个会导致下发被提前清空
         rec.desired = null;
         addEvent(rec.name, 'desired', '期望配置已生效');
       }
@@ -1757,6 +1764,9 @@ const handler = async (req, res) => {
     }
     if (fields.NodeType !== undefined && !NODE_TYPES.includes(String(fields.NodeType))) {
       return json(res, 400, { error: 'NodeType 非法（支持: ' + NODE_TYPES.join(' / ') + '）' });
+    }
+    if (fields.GoogleV4 !== undefined && !['on', 'off'].includes(String(fields.GoogleV4))) {
+      return json(res, 400, { error: 'GoogleV4 只能为 on（强制 IPv4）或 off（恢复默认）' });
     }
     const tgts = targetList(body.targets); // 去重后判定，避免同一节点重复提交被误判为批量
     const isBatch = tgts === 'all' || (Array.isArray(tgts) && tgts.length > 1);
