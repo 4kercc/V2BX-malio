@@ -345,7 +345,7 @@ function mediaChips(n){
   ?mChip('#E50914','N','ok','','Netflix 可看 · '+famTip)
   :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-')+' · '+famTip);
  // 固定两列宽度的网格: 两行两列跨节点对齐；出口协议(v4/v6)单独一行小字，避免与(拉黑)等长标签挤压
- const fam=ip?('<span title="'+esc(famTip)+'" style="grid-column:1 / -1;font-size:9px;line-height:12px;color:'+(is6?'#93c5fd':'#a1a1aa')+';border:1px solid '+(is6?'#3b82f6':'#3f3f46')+';border-radius:3px;padding:0 3px;white-space:nowrap;justify-self:start;margin-top:1px">'+(is6?'v6':'v4')+'</span>'):'';
+ const fam=ip?('<span title="'+esc(famTip)+'" style="grid-column:1 / -1;font-size:9px;line-height:12px;color:'+(g4on?'#4ade80':(is6?'#93c5fd':'#a1a1aa'))+';border:1px solid '+(g4on?'#4ade80':(is6?'#3b82f6':'#3f3f46'))+';border-radius:3px;padding:0 3px;white-space:nowrap;justify-self:start;margin-top:1px">'+(is6?'v6':'v4')+(g4on?'·强制':'')+'</span>'):'';
  return '<span style="display:inline-grid;grid-template-columns:60px 64px;gap:2px 4px;justify-items:start;align-items:center">'
   +yt+g+ai+nf+fam+'</span>';
 }
