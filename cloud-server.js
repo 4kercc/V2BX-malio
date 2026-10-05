@@ -1472,7 +1472,7 @@ const handler = async (req, res) => {
     const clip = (v) => String(v == null ? '' : v).slice(0, 64);
     rec.media = {
       at: Date.now(),
-      ip: clip(m.ip), loc: clip(m.loc), ms: Number(m.ms) || 0,
+      ip: clip(m.ip), loc: clip(m.loc), src: clip(m.src), ms: Number(m.ms) || 0,
       youtube: { ok: !!(m.youtube && m.youtube.ok), region: clip(m.youtube && m.youtube.region), blocked: !!(m.youtube && m.youtube.blocked) },
       google: { ok: !!(m.google && m.google.ok), blocked: !!(m.google && m.google.blocked), code: clip(m.google && m.google.code), search: clip(m.google && m.google.search) },
       netflix: { ok: !!(m.netflix && m.netflix.ok), code: clip(m.netflix && m.netflix.code) },
