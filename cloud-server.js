@@ -895,7 +895,6 @@ button:disabled{opacity:.6;cursor:default}
  <input id="t" name="password" type="password" autocomplete="current-password" autofocus>
  <button id="b" type="submit">登 录</button>
  <div id="err"></div>
- <p class="sub" style="margin:10px 0 0">账号仅用于密码管理器识别，实际校验的是管理 Token</p>
 </form>
 <script>
 document.getElementById('f').addEventListener('submit',function(e){
