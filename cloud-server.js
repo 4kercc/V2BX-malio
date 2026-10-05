@@ -296,13 +296,13 @@ function typeTag(n){const t=(n.info.cfg&&n.info.cfg.NodeType)||'';if(!t)return '
   ? '<span class="badge b-mut" style="font-size:10px">anytls</span>'
   : '<span class="badge b-warn" style="font-size:10px" title="非 anytls 类型：若面板里该节点类型不是它，会导致节点无法正常服务">'+esc(t)+'</span>';}
 // Google 拉黑标记（媒体检测结果）: 列表里直接可见
-// ---------- 流媒体解锁: 列表内联图标（▶YouTube / G Google / AI ChatGPT / N Netflix + ✓✗?） ----------
-function mChip(bg,glyph,ok,tip){
- const mark=ok===true?'✓':(ok===null?'?':'✗');
- const color=ok===true?'#4ade80':(ok===null?'#fbbf24':'#f87171');
- return '<span title="'+esc(tip)+'" style="display:inline-flex;align-items:center;gap:1px;margin-right:4px;vertical-align:middle">'
+// ---------- 流媒体解锁: 列表内联图标（两行两列；失败直接标原因 ✗(403) / ✗(拉黑)） ----------
+function mChip(bg,glyph,state,label,tip){
+ const color=state==='ok'?'#4ade80':(state==='warn'?'#fbbf24':'#f87171');
+ const mark=state==='ok'?'✓':'✗';
+ return '<span title="'+esc(tip)+'" style="display:inline-flex;align-items:center;gap:2px;white-space:nowrap">'
   +'<span style="display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:4px;background:'+bg+';color:#fff;font-size:9px;font-weight:700">'+glyph+'</span>'
-  +'<b style="color:'+color+';font-size:11px">'+mark+'</b></span>';
+  +'<b style="color:'+color+';font-size:11px">'+mark+(label?('('+esc(label)+')'):'')+'</b></span>';
 }
 function mediaScore(n){
  const m=n.media;if(!m||!m.at)return -1;
@@ -316,13 +316,25 @@ function mediaScore(n){
 function mediaChips(n){
  const m=n.media;
  if(!m||!m.at)return '<span class="muted" style="font-size:11px">待检测</span>';
- const yt=m.youtube&&m.youtube.blocked?mChip('#FF0000','▶',false,'YouTube 提示异常流量，出口 IP 疑似被拉黑')
-  :mChip('#FF0000','▶',!!(m.youtube&&m.youtube.ok),'YouTube：'+(m.youtube&&m.youtube.region?('区域 '+m.youtube.region):'不可用'));
- const g=mChip('#4285F4','G',(!!(m.google&&m.google.ok)&&!(m.google&&m.google.blocked)),'Google：'+(m.google&&m.google.blocked?'搜索被跳转 /sorry/（IP 被拉黑）':('HTTP '+(m.google&&m.google.code))));
- const aiOk=m.chatgpt&&m.chatgpt.ok?true:(String(m.chatgpt&&m.chatgpt.code)==='403'?null:false);
- const ai=mChip('#10A37F','AI',aiOk,'ChatGPT：HTTP '+(m.chatgpt&&m.chatgpt.code||'-')+(m.chatgpt&&m.chatgpt.loc?(' · loc='+m.chatgpt.loc):''));
- const nf=mChip('#E50914','N',!!(m.netflix&&m.netflix.ok),'Netflix：HTTP '+(m.netflix&&m.netflix.code||'-'));
- return '<span style="white-space:nowrap">'+yt+g+ai+nf+'</span>';
+ const yt=(m.youtube&&m.youtube.blocked)
+  ?mChip('#FF0000','▶','bad','拉黑','YouTube 提示异常流量：出口 IP 疑似被拉黑')
+  :(m.youtube&&m.youtube.ok)
+   ?mChip('#FF0000','▶','ok',(m.youtube.region||''),'YouTube 可用 · 解锁区域 '+(m.youtube.region||'未知'))
+   :mChip('#FF0000','▶','bad','','YouTube 不可用');
+ const g=(m.google&&m.google.blocked)
+  ?mChip('#4285F4','G','bad','拉黑','Google 搜索被跳转 /sorry/：出口 IP 被判定异常流量')
+  :(m.google&&m.google.ok)
+   ?mChip('#4285F4','G','ok','','Google 正常')
+   :mChip('#4285F4','G','bad',String((m.google&&m.google.code)||''),'Google 不通 · HTTP '+((m.google&&m.google.code)||'-'));
+ const ai=(m.chatgpt&&m.chatgpt.ok)
+  ?mChip('#10A37F','AI','ok','','ChatGPT 可用')
+  :mChip('#10A37F','AI','warn',String((m.chatgpt&&m.chatgpt.code)||''),'ChatGPT 受限 · HTTP '+((m.chatgpt&&m.chatgpt.code)||'-')+((m.chatgpt&&m.chatgpt.loc)?(' · loc='+m.chatgpt.loc):''));
+ const nf=(m.netflix&&m.netflix.ok)
+  ?mChip('#E50914','N','ok','','Netflix 可看')
+  :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-'));
+ return '<span style="display:inline-flex;flex-direction:column;gap:2px">'
+  +'<span style="display:flex;gap:8px">'+yt+g+'</span>'
+  +'<span style="display:flex;gap:8px">'+ai+nf+'</span></span>';
 }
 function mediaTag(n){const m=n.media;
  if(!m||!m.at)return '';
