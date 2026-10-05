@@ -15,7 +15,10 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="24"
+AGENT_VER="25"
+# 媒体探测逻辑版本：改了探测方式（如绑定出口 IP、地址族策略）就 +1，
+# 服务端 MEDIA_PV 同步提升后会让全队旧结果立即失效并自动重测（不用等 12 小时）
+MEDIA_PV="1"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -352,11 +355,11 @@ media_check() { # $1=该节点在云控上的名称 $2=(可选)该节点出口 I
   [[ -z "$ip" ]] && log "media($name): 未取到出口 IP（bind=${bind:-无}）"
   local payload
   payload=$(jq -n \
-    --arg ip "${ip:-}" --arg loc "${loc:-}" --arg src "${bind:-}" \
+    --arg ip "${ip:-}" --arg loc "${loc:-}" --arg src "${bind:-}" --argjson pv "${MEDIA_PV:-1}" \
     --arg yt "${yt:-}" --arg ytb "$ytbad" --arg g "${gcode:-0}" --arg gb "$gblocked" --arg gn "${gredir_code:-0}" \
     --arg nf "${nfcode:-0}" --arg nfb "$nfbad" --arg gpt "${gptcode:-0}" --arg gptloc "${gptloc:-}" \
     --argjson ms "$(( $(date +%s%3N 2>/dev/null || echo 0) - ${ms:-0} ))" \
-    '{ip:$ip, loc:$loc, src:$src, ms:$ms,
+    '{ip:$ip, loc:$loc, src:$src, pv:$pv, ms:$ms,
       youtube:{region:$yt, ok:($yt != ""), blocked:($ytb == "true")},
       google:{ok:(($g == "204") or ($gn == "200" and $gb != "true")), blocked:($gb == "true"), code:$g, search:$gn},
       netflix:{ok:($nf == "200" and $nfb != "true"), code:$nf},

@@ -1351,10 +1351,13 @@ const handler = async (req, res) => {
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     // 实时日志订阅: 窗口内要求节点回传 journalctl 最新输出
     if (rec.logUntil && rec.logUntil > Date.now()) reply.log = 1;
-    // 媒体检测: 面板手动触发，或结果过期(>12h)/从未检测时自动补测（每 10 分钟最多重试一次，避免失败空转）
-    const MEDIA_TTL = 12 * 3600 * 1000, MEDIA_RETRY = 10 * 60 * 1000;
+    // 媒体检测: 面板手动触发，或结果过期(>12h)/从未检测/探测逻辑版本落后时自动补测（每 10 分钟最多重试一次，避免失败空转）
+    // MEDIA_PV: 探测逻辑版本，与 cloud-agent.sh 的 MEDIA_PV 同步提升；提升后全队旧结果立即失效重测
+    const MEDIA_TTL = 12 * 3600 * 1000, MEDIA_RETRY = 10 * 60 * 1000, MEDIA_PV = 1;
+    const mediaStale = !rec.media || (Date.now() - (rec.media.at || 0) > MEDIA_TTL)
+      || (Number(rec.agentVer) >= 24 && Number((rec.media && rec.media.pv) || 0) < MEDIA_PV);
     if (rec.mediaQuery) reply.media = 1;
-    else if (!rec.media || (Date.now() - (rec.media.at || 0) > MEDIA_TTL)) {
+    else if (mediaStale) {
       if (Date.now() - (rec.mediaAttempt || 0) > MEDIA_RETRY) { rec.mediaAttempt = Date.now(); reply.media = 1; }
     }
     if (pending === 'update') reply.version = data.updateVersion || '';
@@ -1472,7 +1475,7 @@ const handler = async (req, res) => {
     const clip = (v) => String(v == null ? '' : v).slice(0, 64);
     rec.media = {
       at: Date.now(),
-      ip: clip(m.ip), loc: clip(m.loc), src: clip(m.src), ms: Number(m.ms) || 0,
+      ip: clip(m.ip), loc: clip(m.loc), src: clip(m.src), ms: Number(m.ms) || 0, pv: Number(m.pv) || 0,
       youtube: { ok: !!(m.youtube && m.youtube.ok), region: clip(m.youtube && m.youtube.region), blocked: !!(m.youtube && m.youtube.blocked) },
       google: { ok: !!(m.google && m.google.ok), blocked: !!(m.google && m.google.blocked), code: clip(m.google && m.google.code), search: clip(m.google && m.google.search) },
       netflix: { ok: !!(m.netflix && m.netflix.ok), code: clip(m.netflix && m.netflix.code) },
