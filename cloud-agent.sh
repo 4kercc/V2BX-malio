@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="18"
+AGENT_VER="19"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -209,7 +209,8 @@ media_check() { # $1=该节点在云控上的名称
   ( curl -s --compressed --max-time 10 -H "Cookie: SOCS=CAI" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0" https://www.youtube.com/premium > "$d/yt" 2>/dev/null ) &
   ( curl -s -o /dev/null -w '%{http_code}' --max-time 6 https://www.google.com/generate_204 > "$d/g" 2>/dev/null ) &
   ( curl -s -o /dev/null -w '%{http_code} %{redirect_url}' --max-time 6 "https://www.google.com/search?q=test" > "$d/gb" 2>/dev/null ) &
-  ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
+  # Netflix: 跟随重定向（301 是正常地域跳转），并检查页面是否出现 "Not Available"（该区无此片源）
+  ( curl -sL --max-time 10 -o "$d/nfb" -w '%{http_code}' https://www.netflix.com/title/81215567 > "$d/nf" 2>/dev/null ) &
   ( curl -s -o /dev/null -w '%{http_code}' --max-time 8 https://chatgpt.com/ > "$d/gpt" 2>/dev/null ) &
   ( curl -s --max-time 6 https://chatgpt.com/cdn-cgi/trace > "$d/gpttr" 2>/dev/null ) &
   trace=$(curl -s --max-time 6 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
@@ -222,6 +223,8 @@ media_check() { # $1=该节点在云控上的名称
   gcode=$(cat "$d/g" 2>/dev/null | tr -d '\n')
   read -r gredir_code gredir_url < <(cat "$d/gb" 2>/dev/null)
   nfcode=$(cat "$d/nf" 2>/dev/null | tr -d '\n')
+  local nfbad=false
+  grep -qi 'not available' "$d/nfb" 2>/dev/null && nfbad=true
   gptcode=$(cat "$d/gpt" 2>/dev/null | tr -d '\n')
   gptloc=$(grep -m1 '^loc=' "$d/gpttr" 2>/dev/null | cut -d= -f2)
   rm -rf "$d"
@@ -231,12 +234,12 @@ media_check() { # $1=该节点在云控上的名称
   payload=$(jq -n \
     --arg ip "${ip:-}" --arg loc "${loc:-}" \
     --arg yt "${yt:-}" --arg ytb "$ytbad" --arg g "${gcode:-0}" --arg gb "$gblocked" --arg gn "${gredir_code:-0}" \
-    --arg nf "${nfcode:-0}" --arg gpt "${gptcode:-0}" --arg gptloc "${gptloc:-}" \
+    --arg nf "${nfcode:-0}" --arg nfb "$nfbad" --arg gpt "${gptcode:-0}" --arg gptloc "${gptloc:-}" \
     --argjson ms "$(( $(date +%s%3N 2>/dev/null || echo 0) - ${ms:-0} ))" \
     '{ip:$ip, loc:$loc, ms:$ms,
       youtube:{region:$yt, ok:($yt != ""), blocked:($ytb == "true")},
       google:{ok:($g == "204"), blocked:($gb == "true"), code:$gn},
-      netflix:{ok:($nf == "200"), code:$nf},
+      netflix:{ok:($nf == "200" and $nfb != "true"), code:$nf},
       chatgpt:{ok:($gpt == "200"), code:$gpt, loc:$gptloc}}' 2>/dev/null)
   [[ -n "$payload" ]] && curl $CURL_TLS -sf --max-time 10 -X POST "$CLOUD_URL/api/media_push" \
     -H "X-Token: $CLOUD_TOKEN" -H "Content-Type: application/json" \

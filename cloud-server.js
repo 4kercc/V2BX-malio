@@ -190,6 +190,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
    <option value="cert">按证书剩余</option>
    <option value="seen">按最后心跳</option>
    <option value="group">按分组</option>
+   <option value="media">按流媒体解锁数</option>
    <option value="ver">按版本</option>
    <option value="warp">按 WARP</option>
    <option value="desired">按待下发</option>
@@ -202,7 +203,7 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
  <div class="tbwrap">
   <table><thead id="tbhead"><tr>
    <th style="width:32px"><input type="checkbox" id="selAll" onchange="toggleAll(this)" style="width:14px;height:14px;padding:0"></th>
-   <th class="sortable" data-col="online" onclick="toggleSort('online')">状态<span class="si"></span></th><th class="sortable" data-col="name" onclick="toggleSort('name')">名称<span class="si"></span></th><th class="sortable" data-col="group" onclick="toggleSort('group')">分组<span class="si"></span></th><th class="sortable" data-col="ip" onclick="toggleSort('ip')">IP<span class="si"></span></th><th class="sortable" data-col="ver" onclick="toggleSort('ver')">版本<span class="si"></span></th><th class="sortable" data-col="rss" onclick="toggleSort('rss')">内存<span class="si"></span></th><th class="sortable" data-col="conns" onclick="toggleSort('conns')">连接<span class="si"></span></th><th class="sortable" data-col="warp" onclick="toggleSort('warp')">WARP<span class="si"></span></th><th class="sortable" data-col="cert" onclick="toggleSort('cert')">证书<span class="si"></span></th><th class="sortable" data-col="panel" onclick="toggleSort('panel')" title="点击排序: 面板域名 → 节点ID">面板 / 节点ID<span class="si"></span></th><th class="sortable" data-col="seen" onclick="toggleSort('seen')">最后心跳<span class="si"></span></th><th class="sortable" data-col="desired" onclick="toggleSort('desired')">待下发<span class="si"></span></th><th class="sortable" data-col="action" onclick="toggleSort('action')">最近动作<span class="si"></span></th>
+   <th class="sortable" data-col="online" onclick="toggleSort('online')">状态<span class="si"></span></th><th class="sortable" data-col="name" onclick="toggleSort('name')">名称<span class="si"></span></th><th class="sortable" data-col="group" onclick="toggleSort('group')">分组<span class="si"></span></th><th class="sortable" data-col="media" onclick="toggleSort('media')" title="流媒体解锁：▶YouTube · G Google · AI ChatGPT · N Netflix（✓可用 ✗不可用 ?受限）">流媒体<span class="si"></span></th><th class="sortable" data-col="ip" onclick="toggleSort('ip')">IP<span class="si"></span></th><th class="sortable" data-col="ver" onclick="toggleSort('ver')">版本<span class="si"></span></th><th class="sortable" data-col="rss" onclick="toggleSort('rss')">内存<span class="si"></span></th><th class="sortable" data-col="conns" onclick="toggleSort('conns')">连接<span class="si"></span></th><th class="sortable" data-col="warp" onclick="toggleSort('warp')">WARP<span class="si"></span></th><th class="sortable" data-col="cert" onclick="toggleSort('cert')">证书<span class="si"></span></th><th class="sortable" data-col="panel" onclick="toggleSort('panel')" title="点击排序: 面板域名 → 节点ID">面板 / 节点ID<span class="si"></span></th><th class="sortable" data-col="seen" onclick="toggleSort('seen')">最后心跳<span class="si"></span></th><th class="sortable" data-col="desired" onclick="toggleSort('desired')">待下发<span class="si"></span></th><th class="sortable" data-col="action" onclick="toggleSort('action')">最近动作<span class="si"></span></th>
   </tr></thead><tbody id="tb"></tbody></table>
  </div>
  <div class="only-mobile" id="mc"></div>
@@ -295,12 +296,39 @@ function typeTag(n){const t=(n.info.cfg&&n.info.cfg.NodeType)||'';if(!t)return '
   ? '<span class="badge b-mut" style="font-size:10px">anytls</span>'
   : '<span class="badge b-warn" style="font-size:10px" title="非 anytls 类型：若面板里该节点类型不是它，会导致节点无法正常服务">'+esc(t)+'</span>';}
 // Google 拉黑标记（媒体检测结果）: 列表里直接可见
+// ---------- 流媒体解锁: 列表内联图标（▶YouTube / G Google / AI ChatGPT / N Netflix + ✓✗?） ----------
+function mChip(bg,glyph,ok,tip){
+ const mark=ok===true?'✓':(ok===null?'?':'✗');
+ const color=ok===true?'#4ade80':(ok===null?'#fbbf24':'#f87171');
+ return '<span title="'+esc(tip)+'" style="display:inline-flex;align-items:center;gap:1px;margin-right:4px;vertical-align:middle">'
+  +'<span style="display:inline-block;width:15px;height:15px;line-height:15px;text-align:center;border-radius:4px;background:'+bg+';color:#fff;font-size:9px;font-weight:700">'+glyph+'</span>'
+  +'<b style="color:'+color+';font-size:11px">'+mark+'</b></span>';
+}
+function mediaScore(n){
+ const m=n.media;if(!m||!m.at)return -1;
+ let s=0;
+ if(m.youtube&&m.youtube.ok&&!m.youtube.blocked)s++;
+ if(m.google&&m.google.ok&&!m.google.blocked)s++;
+ if(m.chatgpt&&m.chatgpt.ok)s++;
+ if(m.netflix&&m.netflix.ok)s++;
+ return s;
+}
+function mediaChips(n){
+ const m=n.media;
+ if(!m||!m.at)return '<span class="muted" style="font-size:11px">待检测</span>';
+ const yt=m.youtube&&m.youtube.blocked?mChip('#FF0000','▶',false,'YouTube 提示异常流量，出口 IP 疑似被拉黑')
+  :mChip('#FF0000','▶',!!(m.youtube&&m.youtube.ok),'YouTube：'+(m.youtube&&m.youtube.region?('区域 '+m.youtube.region):'不可用'));
+ const g=mChip('#4285F4','G',(!!(m.google&&m.google.ok)&&!(m.google&&m.google.blocked)),'Google：'+(m.google&&m.google.blocked?'搜索被跳转 /sorry/（IP 被拉黑）':('HTTP '+(m.google&&m.google.code))));
+ const aiOk=m.chatgpt&&m.chatgpt.ok?true:(String(m.chatgpt&&m.chatgpt.code)==='403'?null:false);
+ const ai=mChip('#10A37F','AI',aiOk,'ChatGPT：HTTP '+(m.chatgpt&&m.chatgpt.code||'-')+(m.chatgpt&&m.chatgpt.loc?(' · loc='+m.chatgpt.loc):''));
+ const nf=mChip('#E50914','N',!!(m.netflix&&m.netflix.ok),'Netflix：HTTP '+(m.netflix&&m.netflix.code||'-'));
+ return '<span style="white-space:nowrap">'+yt+g+ai+nf+'</span>';
+}
 function mediaTag(n){const m=n.media;
  if(!m||!m.at)return '';
  if(m.google&&m.google.blocked)return ' <span class="badge b-bad" style="font-size:10px" title="Google 搜索被跳转 /sorry/，出口 IP 疑似被拉黑（点顶部「🌐 媒体检测」看详情）">🚫Google拉黑</span>';
  if(m.youtube&&m.youtube.blocked)return ' <span class="badge b-bad" style="font-size:10px" title="YouTube 提示异常流量，出口 IP 疑似被拉黑">🚫YT异常</span>';
- const ytOk=m.youtube&&m.youtube.region;
- return ytOk?' <span class="badge b-mut" style="font-size:10px" title="YouTube 解锁区域">YT '+esc(m.youtube.region)+'</span>':'';
+ return '';
 }
 function dupItemHtml(n){return esc(n.ip)+' · NodeID '+esc((n.info.cfg&&n.info.cfg.NodeID)||'-')+' · 连接 '+((n.info.conns)||0)+' · '+((n.info.rss_mb)||0)+'MB · agent v'+esc(n.agentVer||'-')+' · 证书 '+((n.certDays==null)?'-':n.certDays+'天')+' · 心跳 '+fmtTime(n.lastSeen)+' <button class="btn btn-ghost btn-sm dupdel" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'">🗑 删除</button>';}
 function showDups(){
@@ -350,10 +378,10 @@ function renderMediaModal(list,q,all){
   const m=n.media;
   const fresh=m&&m.at&&m.at>=q;
   if(!fresh)pending++;
-  if(!m||!m.at)return '<tr><td>'+esc(n.name)+'</td><td colspan="6" class="muted">等待节点回传…（离线节点不会回传）</td></tr>';
+  if(!m||!m.at)return '<tr><td>'+esc(n.name)+'</td><td colspan="3" class="muted">等待节点回传…（离线节点不会回传）</td></tr>';
   const c=mediaCell(m);
-  if(!fresh)return '<tr><td>'+esc(n.name)+'</td><td colspan="6" class="muted">检测中…（上次结果：'+esc(c.ip)+' · '+c.at+'）</td></tr>';
-  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span></td><td>'+c.yt+'</td><td>'+c.gpt+'</td><td>'+c.nf+'</td><td>'+c.g+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
+  if(!fresh)return '<tr><td>'+esc(n.name)+'</td><td colspan="3" class="muted">检测中…（上次结果：'+esc(c.ip)+' · '+c.at+'）</td></tr>';
+  return '<tr><td>'+esc(n.name)+'</td><td>'+c.ip+' <span class="muted">'+c.loc+'</span></td><td>'+mediaChips(n)+'</td><td class="muted">'+esc(c.at)+'</td></tr>';
  }).join('');
  const st=document.getElementById('mediaStatus');
  if(st)st.textContent=(all?'未勾选节点，已检测全部 ':'已检测 ')+sel.length+' 台 · '+(pending?('等待 '+pending+' 台回传…'):'✓ 全部已回传');
@@ -368,8 +396,8 @@ async function showMedia(){
  if(d.error){show('被拒绝: '+d.error);return;}
  const q=d.queryAt||Date.now();
  document.getElementById('modalBox').innerHTML='<h3>🌐 媒体解锁检测</h3>'
-  +'<div class="muted small" style="margin-bottom:6px">YouTube / ChatGPT / Netflix / Google 拉黑判定（每台约 10 秒，离线节点不会回传）</div>'
-  +'<div style="max-height:52vh;overflow:auto"><table style="min-width:680px"><thead><tr><th>节点</th><th>出口 IP</th><th>YouTube</th><th>ChatGPT</th><th>Netflix</th><th>Google</th><th>检测时间</th></tr></thead><tbody id="mediaTb"></tbody></table></div>'
+  +'<div class="muted small" style="margin-bottom:6px">图标：<span style="color:#FF0000">▶</span> YouTube · <span style="color:#4285F4">G</span> Google · <span style="color:#10A37F">AI</span> ChatGPT · <span style="color:#E50914">N</span> Netflix　（✓ 可用 · ✗ 不可用 · ? 受限/需登录）· 每 12 小时自动检测一次</div>'
+  +'<div style="max-height:52vh;overflow:auto"><table style="min-width:620px"><thead><tr><th>节点</th><th>出口 IP</th><th>流媒体</th><th>检测时间</th></tr></thead><tbody id="mediaTb"></tbody></table></div>'
   +'<div class="foot" id="mediaStatus" style="margin-top:6px"></div>'
   +'<div style="margin-top:10px;display:flex;gap:8px"><button class="btn btn-outline btn-sm" id="mediaAgain">重新检测</button>'
   +'<button class="btn btn-primary btn-sm" id="mediaClose">关闭</button></div>';
@@ -443,6 +471,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
    switch(SORT.col){
     case 'name':return D*cmpStr(a.name,b.name);
     case 'group':return D*cmpStr(a.group||'',b.group||'');
+    case 'media':return D*(mediaScore(a)-mediaScore(b)); // 未检测(-1)排最后
     case 'ip':{ // IP 排序: 同 IP 的节点自动聚在一起，再按 NodeID、名称细分
      const c=cmpStr(a.ip,b.ip);if(c)return D*c;
      const an=((a.info.cfg&&a.info.cfg.NodeID)||0),bn=((b.info.cfg&&b.info.cfg.NodeID)||0);
@@ -487,6 +516,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<td>'+(n.online?badge('b-ok','在线'):badge('b-bad','离线'))+((n.online&&n.info.svc&&n.info.svc!=='active')?' '+(n.info.svc==='activating'?badge('b-info','启动中'):badge('b-warn',n.info.svc==='absent'?'未安装':'服务停止')):'')+'</td>'+
  '<td style="font-weight:500"><a href="#" class="nlink" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" style="color:hsl(var(--info));text-decoration:none" title="单击查看详情 / 双击重命名">'+esc(n.name)+'</a>'+(n.renaming?' '+badge('b-info','✏ → '+esc(n.renaming)):'')+(n.pendingRename?' '+badge('b-warn','→ '+esc(n.pendingRename)):'')+((n.nodeCount>1)?' '+badge('b-mut','多节点 '+n.nodeCount):'')+dupTag(n)+' <button class="btn btn-ghost btn-sm logbtn" data-key="'+encodeURIComponent(n.key)+'" data-name="'+encodeURIComponent(n.name)+'" title="查看实时日志">📜</button></td>'+
  '<td>'+(n.group?badge('b-mut',esc(n.group)):'-')+'</td>'+
+ '<td class="small">'+mediaChips(n)+'</td>'+
  '<td class="small">'+esc(n.ip)+'</td>'+
  '<td>'+(n.info.version?badge('b-mut',esc(n.info.version)):'-')+'</td>'+
  '<td>'+(n.info.rss_mb||0)+' MB</td><td>'+(n.info.conns||0)+'</td>'+
@@ -507,6 +537,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">版本</span><span>'+(n.info.version||'-')+'</span>'+
  '<span class="k">内存</span><span>'+(n.info.rss_mb||0)+' MB</span>'+
  '<span class="k">连接</span><span>'+(n.info.conns||0)+'</span>'+
+ '<span class="k">流媒体</span><span>'+mediaChips(n)+'</span>'+
  '<span class="k">WARP</span><span>'+esc(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+fmtCert(n.certDays)+'</span>'+
@@ -1290,8 +1321,12 @@ const handler = async (req, res) => {
     const reply = { desired: rec.desired || null, action: pending || 'none' };
     // 实时日志订阅: 窗口内要求节点回传 journalctl 最新输出
     if (rec.logUntil && rec.logUntil > Date.now()) reply.log = 1;
-    // 媒体检测: 面板触发的一次性任务
+    // 媒体检测: 面板手动触发，或结果过期(>12h)/从未检测时自动补测（每 10 分钟最多重试一次，避免失败空转）
+    const MEDIA_TTL = 12 * 3600 * 1000, MEDIA_RETRY = 10 * 60 * 1000;
     if (rec.mediaQuery) reply.media = 1;
+    else if (!rec.media || (Date.now() - (rec.media.at || 0) > MEDIA_TTL)) {
+      if (Date.now() - (rec.mediaAttempt || 0) > MEDIA_RETRY) { rec.mediaAttempt = Date.now(); reply.media = 1; }
+    }
     if (pending === 'update') reply.version = data.updateVersion || '';
     // 重命名下发: pendingRename 携带新名，agent 应用后以 appliedRename 确认
     if (rec.pendingRename && rec.pendingRename.newName) reply.desiredName = rec.pendingRename.newName;
