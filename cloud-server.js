@@ -146,16 +146,8 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
    <option value="on">Google/YT 强制 IPv4</option>
    <option value="off">恢复默认（不强制）</option>
   </select>
-  <select id="fType" title="节点类型（与面板里该节点的类型必须一致；仅支持单台下发）">
-   <option value="">节点类型 不变</option>
-   <option value="anytls">anytls</option>
-   <option value="vless">vless</option>
-   <option value="vmess">vmess</option>
-   <option value="trojan">trojan</option>
-   <option value="shadowsocks">shadowsocks</option>
-   <option value="hysteria">hysteria</option>
-   <option value="hysteria2">hysteria2</option>
-   <option value="tuic">tuic</option>
+  <select id="fTargetGroup" title="按分组选定操作目标：选中后，下方所有批量操作（下发/重启/升级/清除期望配置/删除/证书/媒体检测）都作用于该分组，无需逐个勾选；选「按勾选」则回到勾选模式" onchange="onTargetGroupChange()">
+   <option value="">目标分组: 按勾选</option>
   </select>
  </div>
  <div class="row">
@@ -171,7 +163,8 @@ tbody tr:hover{background:hsl(var(--accent)/.5)}
   <button class="btn btn-outline btn-sm" onclick="showDups()" title="检查同名不同机 / 同面板同 NodeID 的重复节点">🔍 重复检查</button>
   <button class="btn btn-outline btn-sm" onclick="showMedia()" title="检测 YouTube / ChatGPT / Netflix / Google 拉黑（未勾选则检测全部）">🌐 媒体检测</button>
  </div>
- <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启 · Google/YT 强制 IPv4 与 WARP 均为整机改动（同机多节点共用 sing_origin.json，改后整机重启一次 V2bX）</p>
+ <p class="muted small" id="tgHint" style="margin:8px 0 0;display:none;color:hsl(var(--info))"></p>
+ <p class="muted" style="margin:8px 0 0">节点在下一个心跳周期（≤2 分钟）内自动应用并重启 · 节点类型固定 anytls（列表里类型不一致的节点会标黄提示）· Google/YT 强制 IPv4 与 WARP 均为整机改动（同机多节点共用 sing_origin.json，改后整机重启一次 V2bX）</p>
 </div>
 <div id="msg"></div>
 
@@ -415,10 +408,11 @@ function renderMediaModal(list,q,all){
  return pending===0;
 }
 async function showMedia(){
+ const tgm=document.getElementById('fTargetGroup');const gm=tgm?tgm.value:'';
  const keys=[...new Set([...document.querySelectorAll('.sel:checked')].map(function(x){return decodeURIComponent(x.value);}))];
- const all=keys.length===0;
- const list=all?NODES.map(function(n){return n.key;}):keys;
- if(!list.length){show('暂无节点');return;}
+ const all=!gm&&keys.length===0;
+ const list=gm?targetGroupNodes(gm).map(function(n){return n.key;}):(all?NODES.map(function(n){return n.key;}):keys);
+ if(!list.length){show(gm?'该分组暂无节点':'暂无节点');return;}
  const d=await api('/api/media_query',{targets:list});
  if(d.error){show('被拒绝: '+d.error);return;}
  const q=d.queryAt||Date.now();
@@ -532,6 +526,14 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  const gf=document.getElementById('groupFilter');const cur=gf.value;
  const groups=[...new Set(NODES.map(n=>n.group).filter(Boolean))].sort();
  if(gf.dataset.sig!==groups.join('|')){gf.dataset.sig=groups.join('|');gf.innerHTML='<option value="">全部分组</option>'+groups.map(g=>'<option value="'+g+'">'+g+'</option>').join('');gf.value=groups.includes(cur)?cur:'';}
+ // 目标分组下拉（批量下发用；选项与上方分组过滤联动刷新）
+ const tg=document.getElementById('fTargetGroup');
+ if(tg){const curT=tg.value;const hasUng=NODES.some(n=>!n.group);
+  const sigT=groups.join('|')+'#'+(hasUng?'1':'0');
+  if(tg.dataset.sig!==sigT){tg.dataset.sig=sigT;
+   tg.innerHTML='<option value="">目标分组: 按勾选</option>'+groups.map(g=>'<option value="'+escAttr(g)+'">'+esc(g)+'</option>').join('')+(hasUng?'<option value="__none__">（未分组）</option>':'');
+   tg.value=(curT==='__none__'&&hasUng)?'__none__':(groups.includes(curT)?curT:'');}
+  updateTargetHint();}
  // 面板域名下拉选项（带各来源节点数，方便区分）
  const hf=document.getElementById('hostFilter');const curH=hf.value;
  const hosts=[...new Set(NODES.map(n=>(n.info.cfg&&n.info.cfg.ApiHost)||'').filter(Boolean))].sort();
@@ -653,10 +655,11 @@ function renderCertModal(list,q,all,panelCert){
  }
  return pending===0;}
 async function showCert(){
+ const tgc=document.getElementById('fTargetGroup');const gc=tgc?tgc.value:'';
  const keys=[...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value));
- const all=keys.length===0;
- const list=all?NODES.map(n=>n.key):keys;
- if(!list.length){show('暂无节点');return;}
+ const all=!gc&&keys.length===0;
+ const list=gc?targetGroupNodes(gc).map(function(n){return n.key;}):(all?NODES.map(n=>n.key):keys);
+ if(!list.length){show(gc?'该分组暂无节点':'暂无节点');return;}
  const d=await api('/api/cert_query',{targets:list});
  if(d.error){show('被拒绝: '+d.error);return;}
  const q=d.queryAt||Date.now();
@@ -682,10 +685,34 @@ async function setGroup(){const t=targets();if(!t)return;const g=document.getEle
  const d=await api('/api/groups',{targets:t,group:g});show(d.error?('被拒绝: '+d.error):('✓ 已将 '+d.applied+' 台节点分组设为 ['+(d.group||'无')+']'));}
 function scheduleRefresh(){if(pollTimer)clearTimeout(pollTimer);pollTimer=setTimeout(()=>{if(AUTO)refresh();scheduleRefresh();},pollMs());}
 function toggleAuto(){AUTO=!AUTO;const b=document.getElementById('autoBtn');b.textContent='自动刷新: '+(AUTO?'开':'关');if(AUTO)refresh();}
+// 分组目标节点: g='__none__' 表示未分组；g='' 表示未启用分组目标
+function targetGroupNodes(g){
+ if(!g)return [];
+ return NODES.filter(function(n){return g==='__none__'?!n.group:(n.group===g);});
+}
+function updateTargetHint(){
+ const el=document.getElementById('tgHint');if(!el)return;
+ const tg=document.getElementById('fTargetGroup');const g=tg?tg.value:'';
+ if(!g){el.style.display='none';el.textContent='';return;}
+ const list=targetGroupNodes(g);
+ el.style.display='';
+ el.textContent='当前操作目标：'+(g==='__none__'?'（未分组）':('分组 ['+g+']'))+' 共 '+list.length+' 台（在线 '+list.filter(function(n){return n.online;}).length+' 台）—— 下方所有批量操作都作用于这些节点，勾选被忽略';
+}
+function onTargetGroupChange(){
+ const tg=document.getElementById('fTargetGroup');const g=tg?tg.value:'';
+ // 列表视图同步过滤到该分组，直观看到将被操作的节点（"未分组"没有对应筛选项，保持视图不变）
+ const gf=document.getElementById('groupFilter');
+ if(g&&g!=='__none__'&&gf&&gf.value!==g){gf.value=g;render();}
+ updateTargetHint();
+}
 // 勾选目标去重: 桌面表格与移动卡片各有一套 checkbox，同一节点可能被勾两次
 // （不去重会导致"只选 1 台"被误判成批量下发，从而拦掉 NodeID 这类差异化字段）
-function targets(){const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
-function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fType','NodeType'],['fG4','GoogleV4']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
+function targets(){
+ // 选了目标分组 → 整组节点就是目标（免勾选）；否则按勾选
+ const tg=document.getElementById('fTargetGroup');const g=tg?tg.value:'';
+ if(g){const list=targetGroupNodes(g);if(!list.length){show('该分组暂无节点');return null;}return list.map(function(n){return n.key;});}
+ const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
+function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fG4','GoogleV4']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
