@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="21"
+AGENT_VER="22"
 
 [[ -f "$CONF" ]] || exit 0
 # shellcheck disable=SC1090
@@ -552,6 +552,12 @@ if [[ "$DO_AGENT_UPDATE" == "1" ]]; then
   else
     rm -f /usr/local/V2bX/cloud-agent.sh.new
     log "agent: self-update download invalid, skipped"
+  fi
+  # 本轮若刚改过 sing_origin.json（GoogleV4），这里补一次重启，避免改动悬空（下轮已无差异不会再触发）
+  if [[ "$G4_APPLIED" == "1" ]]; then
+    systemctl restart V2bX 2>/dev/null \
+      && log "config changed(与 agent 自更新同轮), V2bX restarted" \
+      || log "config changed, 但 restart 失败（自更新同轮）"
   fi
   exit 0
 fi
