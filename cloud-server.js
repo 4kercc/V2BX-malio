@@ -338,11 +338,10 @@ function mediaChips(n){
  const nf=(m.netflix&&m.netflix.ok)
   ?mChip('#E50914','N','ok','','Netflix 可看 · '+famTip)
   :mChip('#E50914','N','warn',String((m.netflix&&m.netflix.code)||''),'Netflix 受限 · HTTP '+((m.netflix&&m.netflix.code)||'-')+' · '+famTip);
- // 固定两列宽度的网格: 两行两列且跨节点对齐；末尾小字标注出口是 IPv4 还是 IPv6
- const fam=ip?('<span title="'+esc(famTip)+'" style="font-size:9px;line-height:12px;color:'+(is6?'#93c5fd':'#a1a1aa')+';border:1px solid '+(is6?'#3b82f6':'#3f3f46')+';border-radius:3px;padding:0 3px;white-space:nowrap">'+(is6?'v6':'v4')+'</span>'):'';
- return '<span style="display:inline-flex;align-items:center;gap:5px">'
-  +'<span style="display:inline-grid;grid-template-columns:66px 44px;gap:2px 4px;justify-items:start;align-items:center">'+yt+g+ai+nf+'</span>'
-  +fam+'</span>';
+ // 固定两列宽度的网格: 两行两列跨节点对齐；出口协议(v4/v6)单独一行小字，避免与(拉黑)等长标签挤压
+ const fam=ip?('<span title="'+esc(famTip)+'" style="grid-column:1 / -1;font-size:9px;line-height:12px;color:'+(is6?'#93c5fd':'#a1a1aa')+';border:1px solid '+(is6?'#3b82f6':'#3f3f46')+';border-radius:3px;padding:0 3px;white-space:nowrap;justify-self:start;margin-top:1px">'+(is6?'v6':'v4')+'</span>'):'';
+ return '<span style="display:inline-grid;grid-template-columns:60px 64px;gap:2px 4px;justify-items:start;align-items:center">'
+  +yt+g+ai+nf+fam+'</span>';
 }
 function mediaTag(n){const m=n.media;
  if(!m||!m.at)return '';
