@@ -61,6 +61,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud
 | 功能 | 操作 |
 |---|---|
 | 查看节点 | 表格：在线状态/版本/内存/连接数/WARP 模式/面板地址+节点ID/最后心跳 |
+| **按分组批量操作** | 批量下发区选「目标分组」（含"未分组"）→ 下方所有操作（下发/重启/升级/清除期望配置/删除/证书到期/媒体检测）都作用于整组，无需逐台勾选；列表视图会自动过滤到该分组并在下方显示"共 N 台（在线 M 台）" |
 | **换面板地址**（网站迁移） | 填 ApiHost → 勾选节点或"下发到全部" → ≤2 分钟全部生效 |
 | 改密钥/节点ID/证书域名 | 同上，对应字段即可 |
 | WARP 批量开关 | 下拉选开/关 → 下发 |
@@ -70,7 +71,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud
 
 ## 四、工作细节
 
-- **批量下发保护**：NodeID 是每台节点不同的差异化字段，**服务端直接禁止**批量/全部下发（只能单台设置），防止把 20 台全改成同一个节点；ApiHost/ApiKey/CertDomain/Warp 可安全批量；
+- **批量下发保护**：NodeID 是每台节点不同的差异化字段，**服务端直接禁止**批量/全部下发（只能单台设置），防止把 20 台全改成同一个节点；ApiHost/ApiKey/CertDomain/Warp/GoogleV4 可安全批量；
+- **节点类型固定 anytls**：面板已不再提供类型切换（安装脚本默认与兜底都是 anytls）；列表里类型不一致的节点会标黄提示，如需纠正可用 API（`/api/desired` 传 NodeType）单台下发；
 - **配置修改不破坏其他内容**：agent 用字段级 sed 只改目标字段，config.json 里的监听 IP、证书路径、内核配置等一概不动；
 - **三重防呆**：修改前自动备份（`config.json.bak.cloud`）→ 修改后 `jq` 校验 JSON，失败自动回滚备份，**绝不带病重启** → 改 CertDomain 时若新域名无证书，自动生成 10 年自签兜底，节点不会重启即挂；
 - 节点身份 = `NODE_NAME + 出口IP`，控制中心自动登记新节点；
