@@ -15,7 +15,8 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="25"
+AGENT_VER="26"
+# agent 版本: 改动了 agent 逻辑就 +1（自更新按"下载版本 > 当前版本"才生效，不改则新脚本永远铺不开）
 # 媒体探测逻辑版本：改了探测方式（如绑定出口 IP、地址族策略）就 +1，
 # 服务端 MEDIA_PV 同步提升后会让全队旧结果立即失效并自动重测（不用等 12 小时）
 MEDIA_PV="1"
@@ -188,6 +189,58 @@ apply_node() { # $1=NodeID $2=jq路径 $3=期望值 $4=当前值 —— 只改�
     rm -f "$CONFIG_JSON.tmp"
     log "node $nid: $path 修改失败（jq 报错）"
   fi
+}
+
+############################################
+# IPv6 入口（每节点）：面板下发 ListenIP6 = auto / 具体裸地址 / off
+#   auto: 在本机公网 v6 里给每个节点分一个，分配结果记在
+#         /etc/V2bX/.v6-assign.json，重启与重复下发都不会漂移（AAAA 记录不会失效）
+#   效果: 节点同时监听 v4 与 v6，出口仍走该节点的 SendIP(v4)，限速/流量归因不变
+#   详见仓库根 IPV6.md
+############################################
+V6_MAP_FILE="/etc/V2bX/.v6-assign.json"
+
+local_v6_addrs() { # 本机公网 v6（scope global，排除 link-local），排序保证地址序稳定
+  ip -o -6 addr show scope global 2>/dev/null \
+    | awk '{split($4,a,"/"); print a[1]}' \
+    | grep -v '^fe80' | sort -u
+}
+
+v6_map_get() { # $1=NodeID → 已分配地址
+  [[ -f "$V6_MAP_FILE" ]] || return 0
+  jq -r --arg n "$1" '.[$n] // empty' "$V6_MAP_FILE" 2>/dev/null
+}
+
+v6_map_set() { # $1=NodeID $2=地址
+  local cur="{}"
+  [[ -f "$V6_MAP_FILE" ]] && cur=$(cat "$V6_MAP_FILE" 2>/dev/null)
+  jq -e . >/dev/null 2>&1 <<<"$cur" || cur="{}"
+  echo "$cur" | jq --arg n "$1" --arg v "$2" '.[$n]=$v' > "$V6_MAP_FILE.tmp" 2>/dev/null \
+    && mv -f "$V6_MAP_FILE.tmp" "$V6_MAP_FILE"
+}
+
+v6_is_local() { # $1=地址 → 是否在本机接口上（防止把别的机器的地址写进配置）
+  [[ -n "$1" ]] && local_v6_addrs | grep -qxF "$1"
+}
+
+v6_auto_for_node() { # $1=NodeID → 输出应分配的 v6（没有可用地址时返回 1）
+  local nid="$1" cand used
+  # 1) 已有分配且仍在本机 → 复用（避免 AAAA 漂移）
+  cand=$(v6_map_get "$nid")
+  if v6_is_local "$cand"; then echo "$cand"; return 0; fi
+  # 2) 已占用：其他节点显式配置的地址 + 其他节点的分配
+  used=$(
+    { jq -r --arg n "$nid" '.Nodes[]? | select((.NodeID|tostring) != $n) | .ListenIP6 // empty' "$CONFIG_JSON" 2>/dev/null
+      jq -r --arg n "$nid" 'to_entries[]? | select(.key != $n) | .value' "$V6_MAP_FILE" 2>/dev/null
+    } | grep -v '^::' | sort -u
+  )
+  # 3) 取第一个未被占用的本机地址
+  while IFS= read -r cand; do
+    [[ -z "$cand" ]] && continue
+    grep -qxF "$cand" <<<"$used" && continue
+    echo "$cand"; return 0
+  done < <(local_v6_addrs)
+  return 1
 }
 
 ############################################
@@ -403,6 +456,7 @@ for ((i=0; i<NODE_CNT; i++)); do
     SEND_IP=$(jq -r ".Nodes[$i].SendIP // empty" "$CONFIG_JSON" 2>/dev/null)
     C_FILE=$(jq -r ".Nodes[$i].CertConfig.CertFile // empty" "$CONFIG_JSON" 2>/dev/null)
     C_DOM=$(jq -r ".Nodes[$i].CertConfig.CertDomain // empty" "$CONFIG_JSON" 2>/dev/null)
+    C_V6=$(jq -r ".Nodes[$i].ListenIP6 // empty" "$CONFIG_JSON" 2>/dev/null)
     N_TYPE=$(jq -r ".Nodes[$i].NodeType // empty" "$CONFIG_JSON" 2>/dev/null)
   fi
   if [[ "$NO_CFG" == "1" ]]; then NAME_I="$BASE_NAME"; else NAME_I=$(node_name "$NID"); fi
@@ -444,13 +498,13 @@ for ((i=0; i<NODE_CNT; i++)); do
     --argjson cFb "${CERT_FB:-false}" --arg cFbAt "$CERT_FB_AT" --arg cFbErr "$CERT_FB_ERR" \
     --arg appliedRename "$APPLIED_RENAME" --argjson nodeCount "$NODE_CNT" --argjson nodeId "${NID:-0}" \
     --arg apiHost "$CUR_HOST" --arg apiKey "$CUR_KEY" --arg certDomain "$C_DOM" --arg cName "$NAME_I" \
-    --arg nodeType "$N_TYPE" --arg googleV4 "$(g4_state)" \
+    --arg nodeType "$N_TYPE" --arg googleV4 "$(g4_state)" --arg listenIP6 "$C_V6" \
     '{name:$name, hostname:$hostname, version:$version, rss_mb:$rss, conns:$conns, uptime_sec:$uptime,
       warp:$warp, svc:$svc, load:$load, ack:$ack, agentVer:$agentVer, certDays:$certDays,
       cert:{path:$cPath, domain:$cDomain, end:$cEnd, days:$cDays, selfSigned:$cSelf,
             fallback:$cFb, fallbackAt:$cFbAt, fallbackError:$cFbErr},
       appliedRename:$appliedRename, nodeCount:$nodeCount, nodeId:$nodeId,
-      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType, GoogleV4:$googleV4}}' 2>/dev/null)
+      cfg:{ApiHost:$apiHost, ApiKey:$apiKey, NodeID:$nodeId, CertDomain:$certDomain, Name:$cName, NodeType:$nodeType, GoogleV4:$googleV4, ListenIP6:$listenIP6}}' 2>/dev/null)
   if [[ -z "$PAYLOAD" ]]; then log "node $NID: payload 构建失败"; continue; fi
 
   RESP=$(curl $CURL_TLS -sf --max-time 15 -X POST "$CLOUD_URL/api/heartbeat" \
@@ -506,6 +560,45 @@ for ((i=0; i<NODE_CNT; i++)); do
       anytls|vless|vmess|trojan|shadowsocks|hysteria|hysteria2|tuic)
         apply_node "$NID" ".NodeType" "$WANT_TYPE" "$N_TYPE" ;;
       *) log "node $NID: NodeType 非法，已忽略: $WANT_TYPE" ;;
+    esac
+  fi
+
+  # IPv6 入口（每节点：auto=本机公网 v6 自动分配 / 具体裸地址 / off=关闭）
+  WANT_V6=$(jq -r '.desired.ListenIP6 // empty' <<<"$RESP" 2>/dev/null)
+  if [[ -n "$WANT_V6" && "$WANT_V6" != "null" ]]; then
+    case "$WANT_V6" in
+      auto)
+        if V6PICK=$(v6_auto_for_node "$NID"); then
+          apply_node "$NID" ".ListenIP6" "$V6PICK" "$C_V6"
+          v6_map_set "$NID" "$V6PICK"
+          C_V6="$V6PICK"
+        else
+          log "node $NID: ListenIP6=auto 但本机没有可用公网 v6（或已被其他节点占用），跳过"
+        fi
+        ;;
+      off|none|-)
+        if [[ -n "$C_V6" ]]; then
+          if jq --argjson nid "$NID" '(.Nodes[]|select(.NodeID==$nid)|del(.ListenIP6))' "$CONFIG_JSON" > "$CONFIG_JSON.tmp" 2>/dev/null; then
+            mv -f "$CONFIG_JSON.tmp" "$CONFIG_JSON"
+            log "node $NID: IPv6 入口已关闭（原 $C_V6）"
+            C_V6=""; CHANGED=1
+          else
+            rm -f "$CONFIG_JSON.tmp"
+          fi
+        fi
+        ;;
+      *:*)
+        if [[ "$WANT_V6" =~ ^[0-9A-Fa-f:]{2,45}$ ]] && v6_is_local "$WANT_V6"; then
+          apply_node "$NID" ".ListenIP6" "$WANT_V6" "$C_V6"
+          v6_map_set "$NID" "$WANT_V6"
+          C_V6="$WANT_V6"
+        else
+          log "node $NID: ListenIP6=$WANT_V6 不在本机接口上，已拒绝（避免把配置写坏）"
+        fi
+        ;;
+      *)
+        log "node $NID: ListenIP6 非法，已忽略: $WANT_V6"
+        ;;
     esac
   fi
 

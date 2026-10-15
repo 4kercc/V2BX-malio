@@ -150,6 +150,7 @@ tbody tr.selrow:hover{background:hsl(var(--primary)/.22)}
    <option value="on">Google/YT 强制 IPv4</option>
    <option value="off">恢复默认（不强制）</option>
   </select>
+  <input id="fV6" title="IPv6 入口：auto=agent 在本机公网 v6 里自动给每个节点分一个（可批量，分配结果不会漂移）；off=关闭该节点的 IPv6 入口（可批量）；也可填具体裸地址（如 2401:db8::2，不带 [] 与端口，仅限单台下发）。生效后节点同时监听 v4 与 v6，出口仍是该节点的 SendIP(v4)；记得给节点域名补 AAAA 记录（节点列表里能看到实际分配的地址）" placeholder="IPv6 入口: auto / off / 2401:db8::2（留空不下发）">
   <select id="fTargetGroup" title="按分组选定操作目标：选中后，下方所有批量操作（下发/重启/升级/清除期望配置/删除/证书/媒体检测）都作用于该分组，无需逐个勾选；选「按勾选」则回到勾选模式" onchange="onTargetGroupChange()">
    <option value="">目标分组: 按勾选</option>
   </select>
@@ -579,6 +580,7 @@ function render(){const keepSel=new Set([...document.querySelectorAll('.sel:chec
  '<span class="k">WARP</span><span>'+esc(n.info.warp||'-')+'</span>'+
  '<span class="k">服务</span><span>'+(n.info.svc==='active'?'运行中':(n.info.svc==='activating'?'启动中':(n.info.svc==='absent'?'未安装':(n.info.svc==='inactive'?'已停止':'-'))))+'</span>'+
  '<span class="k">证书</span><span>'+certCell(n)+'</span>'+
+ '<span class="k">IPv6</span><span>'+((n.info.cfg&&n.info.cfg.ListenIP6)?('<span class="ellip">'+esc(n.info.cfg.ListenIP6)+'</span> <span class="muted small">（配 AAAA 用）</span>'):'<span class="muted">未开启</span>')+'</span>'+
  '<span class="k">面板</span><span class="ellip">'+(((n.info.cfg&&n.info.cfg.ApiHost)?panelTag(n)+'#'+(n.info.cfg.NodeID||'-')+' '+typeTag(n):'-'))+'</span>'+
  '<span class="k">NodeID</span><span>'+((n.info.cfg&&n.info.cfg.NodeID)||'-')+'</span>'+
  '<span class="k">最后心跳</span><span>'+fmtTime(n.lastSeen)+'</span></div>'+
@@ -629,7 +631,7 @@ async function showNode(keyEnc){const key=decodeURIComponent(keyEnc);
  const conns=(m.recent||[]).map(s=>({v:s.c}));
  const evs=(d.events||[]).map(e=>'<li><span class="muted">'+new Date(e.t).toLocaleString()+'</span> — '+esc(e.text)+'</li>').join('');
  showModal('📊 '+esc(d.name)+(d.group?' ['+esc(d.group)+']':''), [
-  'IP '+esc(d.ip)+' · 类型 '+esc((d.info.cfg&&d.info.cfg.NodeType)||'-')+' · 版本 '+esc(d.info.version||'-')+' · Agent v'+esc(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
+  'IP '+esc(d.ip)+' · 类型 '+esc((d.info.cfg&&d.info.cfg.NodeType)||'-')+' · 版本 '+esc(d.info.version||'-')+' · Agent v'+esc(d.agentVer||'-')+' · 证书 '+fmtCert(d.certDays)+((d.info.cfg&&d.info.cfg.ListenIP6)?(' · IPv6 '+esc(d.info.cfg.ListenIP6)):'')+' · 服务 '+(d.info.svc==='active'?'运行中':(d.info.svc==='absent'?'未安装':(d.info.svc==='inactive'?'已停止':'未知'))),
   '<b>内存趋势（近 3 小时）</b>'+sparkline(recent,'hsl(217 91% 60%)'),
   '<b>连接数趋势</b>'+sparkline(conns,'hsl(142 76% 44%)'),
   (evs?'<b>近期事件</b><ul style="margin:4px 0">'+evs+'</ul>':'<div class="muted">暂无事件</div>')
@@ -730,7 +732,7 @@ function targets(){
  const tg=document.getElementById('fTargetGroup');const g=tg?tg.value:'';
  if(g){const list=targetGroupNodes(g);if(!list.length){show('该分组暂无节点');return null;}return list.map(function(n){return n.key;});}
  const s=[...new Set([...document.querySelectorAll('.sel:checked')].map(x=>decodeURIComponent(x.value)))];if(!s.length){show('请先勾选节点');return null;}return s;}
-function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fG4','GoogleV4']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
+function gather(){const f={};for(const [id,k] of [['fApiHost','ApiHost'],['fApiKey','ApiKey'],['fNodeId','NodeID'],['fDomain','CertDomain'],['fWarp','Warp'],['fG4','GoogleV4'],['fV6','ListenIP6']]){const v=document.getElementById(id).value.trim();if(v)f[k]=v;}
  if(f.NodeID&&!/^\\d+$/.test(f.NodeID)){show('NodeID 必须为数字');return null;}return f;}
 async function sendDesired(){const t=targets();if(!t)return;const f=gather();if(!f)return;if(!Object.keys(f).length){show('请至少填写一个字段');return;}
  const d=await api('/api/desired',{targets:t,fields:f});
@@ -1197,7 +1199,7 @@ function readBody(req) {
 }
 function pickCfg(cfg) {
   const out = {};
-  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp', 'NodeType', 'GoogleV4']) {
+  for (const k of ['ApiHost', 'ApiKey', 'NodeID', 'CertDomain', 'Warp', 'NodeType', 'GoogleV4', 'ListenIP6']) {
     if (cfg && cfg[k] !== undefined && cfg[k] !== null && cfg[k] !== '') out[k] = cfg[k];
   }
   return out;
@@ -1205,6 +1207,13 @@ function pickCfg(cfg) {
 // 支持的节点类型（与 V2bX / V2bX.sh 一致）
 const NODE_TYPES = ['anytls', 'vless', 'vmess', 'trojan', 'shadowsocks', 'hysteria', 'hysteria2', 'tuic'];
 const PER_NODE_FIELDS = ['NodeID', 'NodeType']; // 差异化字段：禁止多目标批量下发
+// IPv6 入口的值校验：auto（agent 按机器自动分配，可批量）/ off（关闭，可批量）/ 裸 IPv6 地址（机器相关，只允许单台）
+const LISTEN_IP6_BATCH_OK = ['auto', 'off'];
+function validListenIP6(v) {
+  const s = String(v);
+  if (LISTEN_IP6_BATCH_OK.includes(s)) return true;
+  return /^[0-9A-Fa-f:]{2,45}$/.test(s) && s.includes(':');
+}
 // 实时日志: 订阅窗口内节点持续推送 journalctl 输出，UI 按序拉取增量
 function appendLog(rec, lines) {
   rec.logBuf = rec.logBuf || [];
@@ -1335,9 +1344,18 @@ const handler = async (req, res) => {
       const want = rec.desired, cur = rec.info.cfg || {};
       const norm = (v) => String(v === undefined || v === null ? '' : v).trim();
       const same = (k, actual) => !(k in want) || norm(want[k]) === norm(actual);
+      // IPv6 入口的收敛判定：auto 只要节点已生效任意地址即算满足（实际地址由 agent 分配），off 要求已清空
+      const sameIP6 = () => {
+        if (!('ListenIP6' in want)) return true;
+        const w = norm(want.ListenIP6), a = norm(cur.ListenIP6);
+        if (w === 'auto') return !!a;
+        if (w === 'off') return !a;
+        return w === a;
+      };
       if (same('ApiHost', cur.ApiHost) && same('ApiKey', cur.ApiKey) && same('NodeID', cur.NodeID)
           && same('CertDomain', cur.CertDomain) && same('Warp', rec.info.warp)
-          && same('NodeType', cur.NodeType) && same('GoogleV4', cur.GoogleV4)) { // 注意: 所有可下发字段都必须参与判定，漏一个会导致下发被提前清空
+          && same('NodeType', cur.NodeType) && same('GoogleV4', cur.GoogleV4)
+          && sameIP6()) { // 注意: 所有可下发字段都必须参与判定，漏一个会导致下发被提前清空
         rec.desired = null;
         addEvent(rec.name, 'desired', '期望配置已生效');
       }
@@ -1840,12 +1858,17 @@ const handler = async (req, res) => {
     if (fields.GoogleV4 !== undefined && !['on', 'off'].includes(String(fields.GoogleV4))) {
       return json(res, 400, { error: 'GoogleV4 只能为 on（强制 IPv4）或 off（恢复默认）' });
     }
+    if (fields.ListenIP6 !== undefined && !validListenIP6(fields.ListenIP6)) {
+      return json(res, 400, { error: 'ListenIP6 只支持 auto（自动分配本机公网 v6）/ off（关闭 IPv6 入口）/ 裸 IPv6 地址，如 2401:db8::2（不要带 [] 或端口）' });
+    }
     const tgts = targetList(body.targets); // 去重后判定，避免同一节点重复提交被误判为批量
     const isBatch = tgts === 'all' || (Array.isArray(tgts) && tgts.length > 1);
     if (isBatch) {
-      const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k));
+      // ListenIP6 填具体地址时是机器相关的（每台机器的 v6 不同），只有 auto / off 可以批量
+      const bad = Object.keys(fields).filter((k) => PER_NODE_FIELDS.includes(k)
+        || (k === 'ListenIP6' && !LISTEN_IP6_BATCH_OK.includes(String(fields.ListenIP6))));
       if (bad.length) {
-        return json(res, 400, { error: `字段 ${bad.join(',')} 是每台节点不同的差异化配置，禁止批量下发（当前选中 ${tgts === 'all' ? '全部' : tgts.length + ' 台'}），请只勾选 1 台再下发` });
+        return json(res, 400, { error: `字段 ${bad.join(',')} 是每台节点不同的差异化配置，禁止批量下发（当前选中 ${tgts === 'all' ? '全部' : tgts.length + ' 台'}），请只勾选 1 台再下发；IPv6 想批量请填 auto 或 off` });
       }
     }
     let count = 0;
