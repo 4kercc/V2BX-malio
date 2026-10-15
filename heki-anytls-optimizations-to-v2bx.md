@@ -214,7 +214,7 @@ UoT 请求处理（日志实证）：`AnyTLS UDP user=%d read UoT request failed
 | 文件 | 改动 |
 |---|---|
 | `conf/node.go` | 新增 `ListenIP6`（裸地址，不带方括号/端口） |
-| `core/sing/node.go` | `getInboundOptionsForListen()` 支持指定监听地址；`AddNode` 在 `ListenIP6` 非空时再建一个入站 `node_<ID>_v6`（失败则回滚主入站，避免半注册状态）；`DelNode` 一并删除；`secondaryInboundTag()` 统一命名 |
+| `core/sing/node.go` | `getInboundOptionsForListen()` 支持指定监听地址；`planListeners()` 处理通配地址冲突（见下）；`AddNode` 在需要时再建一个入站 `node_<ID>_v6`（**绑定失败只降级并报错，不会拖垮已工作的主监听**）；`DelNode` 一并删除；`secondaryInboundTag()` 统一命名 |
 | `core/sing/user.go` | `nodeInboundTags()`：用户增删同步到两个入站（否则 v6 入口没有用户） |
 | `core/sing/hook.go` | `LinkSecondaryInbound()` + `resolveInboundTag()`：**把 v6 入站的连接折回主 tag**，限速器查找、用户标识、流量计数器全部按主 tag → v6 用户的限速/设备数/流量统计与 v4 完全一致 |
 | `core/sing/sing.go` | 抽出 `buildSendIPRoute()`：该节点的 SendIP 出口规则同时覆盖 `node_<ID>` 与 `node_<ID>_v6` → v6 进来的流量仍从该节点的 v4 出去 |
@@ -237,8 +237,10 @@ UoT 请求处理（日志实证）：`AnyTLS UDP user=%d read UoT request failed
 1. 节点配置加一行（`/etc/V2bX/config.json` 的对应 `Nodes[]` 条目）：`"ListenIP6": "2401:b60:3d:2::2"`；
 2. `systemctl restart V2bX`；
 3. **DNS 补 AAAA**（客户端要能解析到 v6 地址才会走 v6）：把节点域名（如 `hytron1.wukong.us.kg`）的 AAAA 指到该 v6 地址。这一步不做的话，v6 监听在但只有拿到 v6 地址的客户端才用得上；
-4. 单节点机（`ListenIP` 是 `0.0.0.0`）也可以直接填 `ListenIP6: "::"` → 双栈一个入站搞定。
+4. 单节点机（`ListenIP` 是 `0.0.0.0`）也可以直接填 `ListenIP6: "::"`：因为 `0.0.0.0` 与 `::` 在同一端口会互抢（`::` 默认覆盖 v4），程序会**自动收敛成一个双栈监听**（`planListeners()`），不会出现两个套接字抢端口；反过来说，具体 v4 + `::` 这种组合不会被收敛（通配会占满整机、抢别的节点的地址），程序只会尝试作为第二监听，绑不上就报错降级。
 
-> 每个节点要各占一个 v6 地址（同端口），机器上有几个 v6 就够几个节点用；v6 地址写裸地址，写 `[...]` 或 `addr:port` 会导致绑定失败或绑到错误地址。
+> **通配地址的收敛规则**（`planListeners()`，均有单测）：`0.0.0.0 + ::` → 只留 `::` 双栈一个监听；`::` 作为主监听时额外的地址直接忽略（通配已覆盖）；具体 v4 + 具体 v6 → 原样两个监听（多节点机的标准用法）。任何情况下**第二监听建不起来都只降级**：节点继续在主监听上服务，日志给出 `IPv6 ingress on ... failed` 与原因。
+>
+> 每个节点要各占一个 v6 地址（同端口）；v6 地址写裸地址，写 `[...]` 或 `addr:port` 会导致绑定失败或绑到错误地址。
 
 

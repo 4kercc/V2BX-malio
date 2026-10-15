@@ -134,6 +134,36 @@ func TestSendIPRouteCoversIPv6Ingress(t *testing.T) {
 	}
 }
 
+func TestPlanListenersAvoidsPortConflicts(t *testing.T) {
+	cases := []struct {
+		listenIP, listenIP6 string
+		wantPrimary         string
+		wantSecondary       string
+		wantNote            bool
+	}{
+		// 多节点机的常规用法：各自一个具体 v4 + 一个具体 v6。
+		{"45.196.221.58", "2401:b60:3d:2::2", "45.196.221.58", "2401:b60:3d:2::2", false},
+		// 单节点机：0.0.0.0 + :: 会在同一端口互相抢（:: 默认覆盖 v4），收敛成双栈。
+		{"0.0.0.0", "::", "::", "", true},
+		// 已经是双栈监听时，额外地址是多余的（通配已覆盖）。
+		{"::", "2401:b60:3d:2::2", "::", "", true},
+		// 没有 IPv6 入口时行为完全不变。
+		{"45.196.221.58", "", "45.196.221.58", "", false},
+		// 具体 v4 + :: 不能收敛（:: 会占满整机，抢别的节点），仍按第二监听尝试，失败只降级。
+		{"45.196.221.58", "::", "45.196.221.58", "::", false},
+	}
+	for _, c := range cases {
+		primary, secondary, note := planListeners(c.listenIP, c.listenIP6)
+		if primary != c.wantPrimary || secondary != c.wantSecondary {
+			t.Fatalf("planListeners(%q, %q) = (%q, %q), want (%q, %q)",
+				c.listenIP, c.listenIP6, primary, secondary, c.wantPrimary, c.wantSecondary)
+		}
+		if (note != "") != c.wantNote {
+			t.Fatalf("planListeners(%q, %q) note=%q, wantNote=%v", c.listenIP, c.listenIP6, note, c.wantNote)
+		}
+	}
+}
+
 func TestHookFoldsIPv6IngressIntoNodeTag(t *testing.T) {
 	hook := NewHookServer()
 	if got := hook.resolveInboundTag("node_37_v6"); got != "node_37_v6" {

@@ -197,27 +197,68 @@ func (b *Sing) createInbound(tag string, info *panel.NodeInfo, config *conf.Opti
 	return nil
 }
 
+// planListeners decides which listen addresses a node really gets. An IPv6
+// wildcard covers IPv4 as well (dual stack), so combining it with a wider
+// address would only make the two sockets fight over the same port:
+//
+//	0.0.0.0 + ::  -> a single dual-stack :: listener (same coverage, no conflict)
+//	::      + ip  -> the wildcard already covers it, the extra address is dropped
+//
+// Everything else (a specific IPv4 plus a specific IPv6, which is how one machine
+// serves several nodes) is left untouched.
+func planListeners(listenIP, listenIP6 string) (primary, secondary, note string) {
+	if listenIP6 == "" {
+		return listenIP, "", ""
+	}
+	primaryAddr, err := netip.ParseAddr(listenIP)
+	if err != nil {
+		return listenIP, listenIP6, ""
+	}
+	secondaryAddr, err := netip.ParseAddr(listenIP6)
+	if err != nil {
+		return listenIP, listenIP6, ""
+	}
+	if primaryAddr == netip.IPv4Unspecified() && secondaryAddr == netip.IPv6Unspecified() {
+		// Both are wildcards: the dual-stack listener covers what the IPv4 one
+		// covered, so a single socket serves both families.
+		return listenIP6, "", fmt.Sprintf("%s is a dual-stack listener and already accepts IPv4 clients", listenIP6)
+	}
+	if primaryAddr == netip.IPv6Unspecified() {
+		return listenIP, "", fmt.Sprintf("%s already accepts IPv4 and IPv6 clients", listenIP)
+	}
+	// A specific IPv4 plus "::" is deliberately not collapsed: the wildcard is
+	// machine-wide and would take over the addresses of the other nodes on this
+	// host, so it is tried as a second listener and its bind fails instead.
+	return listenIP, listenIP6, ""
+}
+
 func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
-	err := b.createInbound(tag, info, config, config.ListenIP)
+	primary, secondary, note := planListeners(config.ListenIP, config.ListenIP6)
+	if note != "" {
+		log.Info(fmt.Sprintf("Node %s: extra listen address %s skipped: %s", tag, config.ListenIP6, note))
+	}
+	err := b.createInbound(tag, info, config, primary)
 	if err != nil {
 		return err
 	}
-	if config.ListenIP6 == "" {
+	if secondary == "" {
 		return nil
 	}
 	// Optional IPv6 ingress: the same node, users and certificate, reached on a
 	// second address. Its connections are folded back into this node's tag by
 	// the hook, and the auto-generated SendIP route treats both tags the same.
-	secondary := secondaryInboundTag(tag)
-	err = b.createInbound(secondary, info, config, config.ListenIP6)
+	secondaryTag := secondaryInboundTag(tag)
+	err = b.createInbound(secondaryTag, info, config, secondary)
 	if err != nil {
-		// Roll the primary listener back: a half-registered node would report
-		// traffic from an inbound without limits or users.
-		_ = b.box.Inbound().Remove(tag)
-		return fmt.Errorf("add ipv6 inbound error: %s", err)
+		// The node keeps serving on its primary address: a bad extra address
+		// (not local, already taken, IPv6 wildcard next to a specific IPv4) must
+		// not take a working node down.
+		log.Error(fmt.Sprintf("Node %s: IPv6 ingress on %s failed, node keeps serving on %s: %s",
+			tag, secondary, primary, err))
+		return nil
 	}
-	b.hookServer.LinkSecondaryInbound(tag, secondary)
-	log.Info(fmt.Sprintf("Node %s also accepts IPv6 clients on %s:%d", tag, config.ListenIP6, info.Common.ServerPort))
+	b.hookServer.LinkSecondaryInbound(tag, secondaryTag)
+	log.Info(fmt.Sprintf("Node %s also accepts IPv6 clients on %s:%d", tag, secondary, info.Common.ServerPort))
 	return nil
 }
 
