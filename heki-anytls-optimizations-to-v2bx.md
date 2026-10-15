@@ -193,3 +193,52 @@ UoT 请求处理（日志实证）：`AnyTLS UDP user=%d read UoT request failed
 - `go build -tags "sing,with_gvisor,with_wireguard"`（linux/amd64、linux/arm64）exit 0；
 - `cloud-server.js` 通过 `node --check`，`cloud-agent.sh` 通过 `bash -n`。
 
+## 八、第四阶段：每节点 IPv6 入口（v6 进来、v4 出去）
+
+### 8.1 问题与结论
+
+现象：机器有公网 v6（如 `2401:b60:3d:2::2`），但 `ss -ntlp` 只有 `45.196.221.58:443` —— 一个 v6 监听都没有。
+
+根因（源码级证据链，不是猜测）：
+
+1. V2bX 把配置的 `ListenIP` 原样交给 sing-box（`core/sing/node.go:128-136`）；
+2. sing-box 对 `0.0.0.0` 有特判（`sing` 库 `common/metadata/network.go:5-10`）：`addr == IPv4Unspecified()` → 网络名变成 **`tcp4`**，其余（`::`、具体 v6）保持 `tcp`；
+3. Go 标准库（`net/ipsock_posix.go:140-151`）：`tcp4` → `AF_INET`（纯 v4）；`tcp` + 通配 `::` → `AF_INET6` 且 `ipv6only=false` → **双栈**。
+
+所以"只监听 v4"是 `ListenIP=0.0.0.0` 的必然结果，而多节点机每个节点绑各自 v4（为了出口 IP 隔离），不可能都改成 `::`（同端口通配地址会互相冲突）。
+
+**结论：给每个节点加一个可选的第二监听地址 `ListenIP6`**，同一节点、同一份用户/证书/填充方案，出口仍由该节点的 `SendIP` 决定 —— 即"v6 入口，v4 出口"。
+
+### 8.2 实现
+
+| 文件 | 改动 |
+|---|---|
+| `conf/node.go` | 新增 `ListenIP6`（裸地址，不带方括号/端口） |
+| `core/sing/node.go` | `getInboundOptionsForListen()` 支持指定监听地址；`AddNode` 在 `ListenIP6` 非空时再建一个入站 `node_<ID>_v6`（失败则回滚主入站，避免半注册状态）；`DelNode` 一并删除；`secondaryInboundTag()` 统一命名 |
+| `core/sing/user.go` | `nodeInboundTags()`：用户增删同步到两个入站（否则 v6 入口没有用户） |
+| `core/sing/hook.go` | `LinkSecondaryInbound()` + `resolveInboundTag()`：**把 v6 入站的连接折回主 tag**，限速器查找、用户标识、流量计数器全部按主 tag → v6 用户的限速/设备数/流量统计与 v4 完全一致 |
+| `core/sing/sing.go` | 抽出 `buildSendIPRoute()`：该节点的 SendIP 出口规则同时覆盖 `node_<ID>` 与 `node_<ID>_v6` → v6 进来的流量仍从该节点的 v4 出去 |
+
+> 命名约束：节点 `Name` 以 `_v6` 结尾时不能再启用 IPv6 入口（tag 会撞车，`AddNode` 会明确报错而不会静默把流量算错）。
+
+### 8.3 实测（45.196.221.58，两个节点）
+
+- 配置：NodeID 37 → `ListenIP6=2401:b60:3d:2::2`，NodeID 38 → `2401:b60:3d:1b::2`；`SendIP` 保持各自 v4。
+- 监听：`ss -ntlp` 出现 4 条 —— `45.196.221.58:443`、`45.196.221.67:443`、`[2401:b60:3d:2::2]:443`、`[2401:b60:3d:1b::2]:443`；日志打印 `Node node_38 also accepts IPv6 clients on 2401:b60:3d:1b::2:443`。
+- 外网 v6 握手（用 racknerd 的 v6 出口做真实客户端）：`[2401:b60:3d:2::2]:443` 返回 `CN=hytron1.wukong.us.kg`，`[2401:b60:3d:1b::2]:443` 返回 `CN=hytron1-1.wukong.us.kg` —— 各自服务自己的证书。
+- v4 未受影响：公网 v4 两个端点证书不变。
+- **环回集成测试**（模拟 SSPanel 面板 + 测试实例 + 真 AnyTLS 客户端，不碰真实用户数据）：
+  - 应用日志 `inbound/anytls[node_1_v6] → [it-test-uuid-0001] inbound connection to cp.cloudflare.com:80` → **`outbound/direct[node_1_out]`**（绑定 `45.196.221.58`）→ 证明 v6 入站吃的是该节点的 SendIP 出口规则；
+  - 模拟面板收到的上报 `{"d":1618,"u":192,"user_id":1}` = v6 的 812 字节 + v4 的 806 字节 → 两个入口流量**合计到同一节点同一用户**；
+  - 全程无 `get limiter for node_1_v6` 告警 → 限速走主 tag。
+
+### 8.4 启用方式
+
+1. 节点配置加一行（`/etc/V2bX/config.json` 的对应 `Nodes[]` 条目）：`"ListenIP6": "2401:b60:3d:2::2"`；
+2. `systemctl restart V2bX`；
+3. **DNS 补 AAAA**（客户端要能解析到 v6 地址才会走 v6）：把节点域名（如 `hytron1.wukong.us.kg`）的 AAAA 指到该 v6 地址。这一步不做的话，v6 监听在但只有拿到 v6 地址的客户端才用得上；
+4. 单节点机（`ListenIP` 是 `0.0.0.0`）也可以直接填 `ListenIP6: "::"` → 双栈一个入站搞定。
+
+> 每个节点要各占一个 v6 地址（同端口），机器上有几个 v6 就够几个节点用；v6 地址写裸地址，写 `[...]` 或 `addr:port` 会导致绑定失败或绑到错误地址。
+
+

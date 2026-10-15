@@ -8,6 +8,7 @@
 
 | 版本 | 发布类型 | 核心改动说明 |
 |---|---|---|
+| **v1.2.0** | Release / IPv6 入口 | 1. 每节点可配置第二监听地址 `ListenIP6`：同一节点/用户/证书，v6 客户端的连接在 hook 层折回主 tag（限速、设备数、流量统计与 v4 一致），SendIP 出口规则同时覆盖 v6 入站 tag（**v6 进、v4 出**）；<br>2. 定位 `ListenIP=0.0.0.0` 只监听 v4 的根因（sing-box 把 `0.0.0.0` 映射成 `tcp4` 网络），单节点机可改 `::` 双栈；<br>3. 实测：45.196.221.58 两节点加 v6 监听后，外网 v6 握手返回各自证书；模拟面板集成测试确认 v6+v4 流量合计归因、出口绑定 `node_1_out`。 |
 | **v1.1.0** | Release / 证书链路 | 1. 面板驱动证书链路：域名推导取面板 `server` 主段（不用客户端伪装 SNI）、面板推送证书原子落盘、仅有域名时自动把 `CertMode=none` 提升为 `http`（`node/cert_panel.go`）；<br>2. **ACME 申请失败默认降级自签证书并告警，不再阻断节点启动**（`CertConfig.StrictACMEFailure=true` 可恢复旧行为）；续期任务每日对自签占位证书重新申请，恢复后自动换上正式证书并清除告警；<br>3. ECH 入站与面板 `server_name` 真正写入 sing-box（`core/sing/node.go` 的 `buildInboundTLS`）；<br>4. 云控可见性：agent 上报 `cert.fallback*`、新增证书探测路径，面板出事件 + Telegram/Webhook 告警 + `自签·ACME失败` 徽标。 |
 | **v1.0.9** | Release / 精简构建 | 1. 裁剪为 AnyTLS-only 精简版，移除 Xray/Hysteria2 独立内核与 quic-go 依赖；<br>2. 修复 gVisor 依赖报错，恢复 `with_gvisor` 标签；<br>3. 二进制从 134MB 降至 111MB，发布包 44MB 降至 35MB。 |
 | **v1.0.8** | Release / 体验优化 | 1. 增强运行日志可观测性，启动时输出协议/端口/用户数；<br>2. 注入真实版本号 ldflags，启动横幅不再显示 TempVersion；<br>3. 默认日志级别调整为 `info`，恢复每分钟流量与在线统计上报。 |
@@ -106,6 +107,14 @@
 * **「面板 / 节点ID」列自动换行**：去掉省略号截断，长域名徽标整块折行、超长 token 可断行；该列 `th` 设 `min-width:200px`（否则 table-layout:auto 会把列压到 88px，导致所有单元格折成 5 行）。
 * **节点类型固定 anytls**：面板不再提供类型切换（安装脚本默认与兜底均为 anytls）；服务端 `NODE_TYPES` 校验与 `NodeType` 单台下发能力保留（脚本可用 API 纠正历史遗留），列表对非 anytls 节点标黄提示。
 * **登录页**：表单保留「账号(username) + 管理 Token(password)」两字段以兼容密码管理器（Bitwarden 等）的内联填充图标，但页面上不再显示解释文案；实际校验的始终是管理 Token，会话 Cookie 只在内存（服务重启即失效，用 `?token=` 重新登录）。
+
+### 6. IPv6 入口（每节点多监听地址，v1.2.0）
+
+* **问题**：机器有公网 IPv6，但 `ss -ntlp` 只有 v4 监听 —— 根因是 `ListenIP=0.0.0.0`：sing-box 对 `0.0.0.0` 特判成 **`tcp4`** 网络（`sing/common/metadata/network.go`），Go 侧 `tcp4` 即 `AF_INET` 纯 v4；`::` 才是 `tcp` + 通配 → 双栈。多节点机每节点绑各自 v4（出口隔离），无法都改 `::`（同端口通配会冲突）。
+* **做法**：新增每节点字段 **`ListenIP6`**（第二监听地址，裸地址不带方括号/端口）。`AddNode` 额外建一个入站 `node_<ID>_v6`（同用户/证书/填充方案；失败自动回滚主入站），`DelNode` 一并删除，用户增删同步到两个入站。
+* **归因与出口**：`hook` 层把 v6 入站的连接折回主 tag（限速、设备数、流量计数器一律按主 tag）；`buildSendIPRoute()` 生成的该节点出口规则同时覆盖 `node_<ID>` 与 `node_<ID>_v6` → **v6 进来、该节点 v4 出去**。
+* **启用**：`Nodes[]` 加 `"ListenIP6": "2401:b60:3d:2::2"` → 重启 → 给节点域名补 **AAAA** 记录（否则客户端解析不到 v6）。单节点机直接填 `"::"` 即可双栈。
+* **实测**（45.196.221.58）：`ss` 出现 4 条监听（2×v4 + 2×v6）；用 racknerd 的公网 v6 做真实客户端，两个 v6 端点分别返回 `CN=hytron1.wukong.us.kg` / `CN=hytron1-1.wukong.us.kg`；模拟面板集成测试确认 v6 连接走 `outbound/direct[node_1_out]`（绑 SendIP），且 v6(812B)+v4(806B)=上报 1618B 合计到同一用户、无 `get limiter for node_1_v6` 告警。
 
 ---
 

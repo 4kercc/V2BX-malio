@@ -10,6 +10,7 @@ import (
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
+	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
 )
@@ -124,10 +125,29 @@ func buildInboundTLS(info *panel.NodeInfo, c *conf.Options) (option.InboundTLSOp
 	return tls, nil
 }
 
+// secondaryInboundSuffix marks the extra inbound that accepts a node's IPv6
+// clients. Traffic arriving there is attributed to the primary tag, so limits,
+// device counting and traffic reports stay per node. A node whose own name ends
+// with this suffix cannot be combined with an IPv6 ingress: the tags would
+// collide and AddNode fails loudly instead of misattributing traffic.
+const secondaryInboundSuffix = "_v6"
+
+// secondaryInboundTag returns the tag of the extra IPv6 ingress of a node.
+func secondaryInboundTag(tag string) string {
+	return tag + secondaryInboundSuffix
+}
+
 func getInboundOptions(tag string, info *panel.NodeInfo, c *conf.Options) (option.Inbound, error) {
-	addr, err := netip.ParseAddr(c.ListenIP)
+	return getInboundOptionsForListen(tag, info, c, c.ListenIP)
+}
+
+// getInboundOptionsForListen builds the inbound for one listen address of a
+// node. The address is written as a bare IP (0.0.0.0, ::, 2401:db8::1): sing-box
+// turns 0.0.0.0 into a tcp4 socket, while :: yields a dual stack one.
+func getInboundOptionsForListen(tag string, info *panel.NodeInfo, c *conf.Options, listenIP string) (option.Inbound, error) {
+	addr, err := netip.ParseAddr(listenIP)
 	if err != nil {
-		return option.Inbound{}, fmt.Errorf("the listen ip not vail")
+		return option.Inbound{}, fmt.Errorf("the listen ip not vail: %s", listenIP)
 	}
 	listen := option.ListenOptions{
 		Listen:      (*badoption.Addr)(&addr),
@@ -157,13 +177,13 @@ func getInboundOptions(tag string, info *panel.NodeInfo, c *conf.Options) (optio
 	return in, nil
 }
 
-func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
-	c, err := getInboundOptions(tag, info, config)
+// createInbound registers one listen address of a node with the box.
+func (b *Sing) createInbound(tag string, info *panel.NodeInfo, config *conf.Options, listenIP string) error {
+	c, err := getInboundOptionsForListen(tag, info, config, listenIP)
 	if err != nil {
 		return err
 	}
-	in := b.box.Inbound()
-	err = in.Create(
+	err = b.box.Inbound().Create(
 		b.ctx,
 		b.box.Router(),
 		b.logFactory.NewLogger(fmt.Sprintf("inbound/%s[%s]", c.Type, tag)),
@@ -171,15 +191,46 @@ func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 		c.Type,
 		c.Options,
 	)
-
 	if err != nil {
 		return fmt.Errorf("add inbound error: %s", err)
 	}
 	return nil
 }
 
+func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
+	err := b.createInbound(tag, info, config, config.ListenIP)
+	if err != nil {
+		return err
+	}
+	if config.ListenIP6 == "" {
+		return nil
+	}
+	// Optional IPv6 ingress: the same node, users and certificate, reached on a
+	// second address. Its connections are folded back into this node's tag by
+	// the hook, and the auto-generated SendIP route treats both tags the same.
+	secondary := secondaryInboundTag(tag)
+	err = b.createInbound(secondary, info, config, config.ListenIP6)
+	if err != nil {
+		// Roll the primary listener back: a half-registered node would report
+		// traffic from an inbound without limits or users.
+		_ = b.box.Inbound().Remove(tag)
+		return fmt.Errorf("add ipv6 inbound error: %s", err)
+	}
+	b.hookServer.LinkSecondaryInbound(tag, secondary)
+	log.Info(fmt.Sprintf("Node %s also accepts IPv6 clients on %s:%d", tag, config.ListenIP6, info.Common.ServerPort))
+	return nil
+}
+
 func (b *Sing) DelNode(tag string) error {
 	in := b.box.Inbound()
+	secondary := secondaryInboundTag(tag)
+	if _, found := in.Get(secondary); found {
+		err := in.Remove(secondary)
+		if err != nil {
+			return fmt.Errorf("delete ipv6 inbound error: %s", err)
+		}
+		b.hookServer.UnlinkSecondaryInbound(secondary)
+	}
 	err := in.Remove(tag)
 	if err != nil {
 		return fmt.Errorf("delete inbound error: %s", err)

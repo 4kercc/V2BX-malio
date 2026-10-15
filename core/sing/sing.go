@@ -87,37 +87,17 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 			if sendIP == "" || sendIP == "0.0.0.0" || sendIP == "::" {
 				continue
 			}
-			addr, parseErr := netip.ParseAddr(sendIP)
-			if parseErr != nil {
-				log.Warn(fmt.Sprintf("Invalid SendIP %s for NodeID %d: %s", sendIP, nodeConf.ApiConfig.NodeID, parseErr))
-				continue
-			}
 
 			// Generate tag using same logic as node/controller.buildNodeTag
 			tag := nodeConf.Options.Name
 			if tag == "" {
 				tag = "node_" + strconv.Itoa(nodeConf.ApiConfig.NodeID)
 			}
-			outboundTag := tag + "_out"
 
-			// Build dialer options for binding source IP
-			bindAddr := badoption.Addr(addr)
-			dialerOpts := option.DialerOptions{}
-			if addr.Is4() {
-				dialerOpts.Inet4BindAddress = &bindAddr
-			} else {
-				dialerOpts.Inet6BindAddress = &bindAddr
-			}
-
-			// Create direct outbound with bind address
-			directOpts := option.DirectOutboundOptions{
-				DialerOptions: dialerOpts,
-			}
-
-			outbound := option.Outbound{
-				Tag:     outboundTag,
-				Type:    C.TypeDirect,
-				Options: &directOpts,
+			outbound, rule, buildErr := buildSendIPRoute(tag, sendIP, nodeConf.Options.ListenIP6 != "")
+			if buildErr != nil {
+				log.Warn(fmt.Sprintf("Invalid SendIP %s for NodeID %d: %s", sendIP, nodeConf.ApiConfig.NodeID, buildErr))
+				continue
 			}
 
 			// Append outbound
@@ -125,26 +105,10 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 				options.Outbounds = []option.Outbound{}
 			}
 			options.Outbounds = append(options.Outbounds, outbound)
-
-			// Build routing rule: inbound tag -> specific outbound
-			rule := option.Rule{
-				Type: C.RuleTypeDefault,
-				DefaultOptions: option.DefaultRule{
-					RawDefaultRule: option.RawDefaultRule{
-						Inbound: badoption.Listable[string]{tag},
-					},
-					RuleAction: option.RuleAction{
-						Action: C.RuleActionTypeRoute,
-						RouteOptions: option.RouteActionOptions{
-							Outbound: outboundTag,
-						},
-					},
-				},
-			}
 			autoRules = append(autoRules, rule)
 
 			log.Info(fmt.Sprintf("Auto-configured outbound %s with bind_address %s for node %s (NodeID=%d)",
-				outboundTag, sendIP, tag, nodeConf.ApiConfig.NodeID))
+				outbound.Tag, sendIP, tag, nodeConf.ApiConfig.NodeID))
 		}
 
 		// Prepend auto-generated rules before existing rules
@@ -179,10 +143,56 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 	}, nil
 }
 
+// buildSendIPRoute builds the direct outbound bound to a node's SendIP together
+// with the routing rule that sends that node's inbounds to it. When the node also
+// accepts IPv6 clients, its extra ingress is covered by the same rule, so the
+// source address of the traffic keeps depending on the node, not on the address
+// family the client connected over.
+func buildSendIPRoute(tag string, sendIP string, hasIPv6Ingress bool) (option.Outbound, option.Rule, error) {
+	addr, err := netip.ParseAddr(sendIP)
+	if err != nil {
+		return option.Outbound{}, option.Rule{}, err
+	}
+	outboundTag := tag + "_out"
+
+	bindAddr := badoption.Addr(addr)
+	dialerOpts := option.DialerOptions{}
+	if addr.Is4() {
+		dialerOpts.Inet4BindAddress = &bindAddr
+	} else {
+		dialerOpts.Inet6BindAddress = &bindAddr
+	}
+
+	outbound := option.Outbound{
+		Tag:     outboundTag,
+		Type:    C.TypeDirect,
+		Options: &option.DirectOutboundOptions{DialerOptions: dialerOpts},
+	}
+
+	inboundTags := badoption.Listable[string]{tag}
+	if hasIPv6Ingress {
+		inboundTags = append(inboundTags, secondaryInboundTag(tag))
+	}
+	rule := option.Rule{
+		Type: C.RuleTypeDefault,
+		DefaultOptions: option.DefaultRule{
+			RawDefaultRule: option.RawDefaultRule{
+				Inbound: inboundTags,
+			},
+			RuleAction: option.RuleAction{
+				Action: C.RuleActionTypeRoute,
+				RouteOptions: option.RouteActionOptions{
+					Outbound: outboundTag,
+				},
+			},
+		},
+	}
+	return outbound, rule, nil
+}
+
 func (b *Sing) Start() error {
 	return b.box.Start()
 }
-
 func (b *Sing) Close() error {
 	return b.box.Close()
 }

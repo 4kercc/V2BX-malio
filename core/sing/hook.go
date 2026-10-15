@@ -21,6 +21,9 @@ var _ adapter.ConnectionTracker = (*HookServer)(nil)
 
 type HookServer struct {
 	counter sync.Map //map[string]*counter.TrafficCounter
+	// secondaryTags maps the tag of an extra IPv6 ingress to the node's primary
+	// tag, so its connections use that node's limiter and traffic counter.
+	secondaryTags sync.Map //map[string]string
 }
 
 func (h *HookServer) ModeList() []string {
@@ -34,17 +37,39 @@ func NewHookServer() *HookServer {
 	return server
 }
 
+// LinkSecondaryInbound records that connections arriving on secondary belong to
+// the node registered under primary.
+func (h *HookServer) LinkSecondaryInbound(primary, secondary string) {
+	h.secondaryTags.Store(secondary, primary)
+}
+
+func (h *HookServer) UnlinkSecondaryInbound(secondary string) {
+	h.secondaryTags.Delete(secondary)
+}
+
+// resolveInboundTag folds an extra ingress tag back into its node tag. Everything
+// downstream (limiter registry, user tag formatting, traffic counters) is keyed
+// by the node tag, so an IPv6 client is limited and accounted exactly like an
+// IPv4 one.
+func (h *HookServer) resolveInboundTag(tag string) string {
+	if primary, ok := h.secondaryTags.Load(tag); ok {
+		return primary.(string)
+	}
+	return tag
+}
+
 func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) net.Conn {
-	l, err := limiter.GetLimiter(m.Inbound)
+	inbound := h.resolveInboundTag(m.Inbound)
+	l, err := limiter.GetLimiter(inbound)
 	if err != nil {
-		log.Warn("get limiter for ", m.Inbound, " error: ", err)
+		log.Warn("get limiter for ", inbound, " error: ", err)
 		return conn
 	}
-	taguuid := format.UserTag(m.Inbound, m.User)
+	taguuid := format.UserTag(inbound, m.User)
 	ip := m.Source.Addr.String()
 	if b, r := l.CheckLimit(taguuid, ip, true, true); r {
 		conn.Close()
-		log.Error("[", m.Inbound, "] ", "Limited ", m.User, " by ip or conn")
+		log.Error("[", inbound, "] ", "Limited ", m.User, " by ip or conn")
 		return conn
 	} else if b != nil {
 		conn = rate.NewConnRateLimiter(conn, b)
@@ -72,9 +97,9 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 		}
 	}
 	var t *counter.TrafficCounter
-	if c, ok := h.counter.Load(m.Inbound); !ok {
+	if c, ok := h.counter.Load(inbound); !ok {
 		t = counter.NewTrafficCounter()
-		h.counter.Store(m.Inbound, t)
+		h.counter.Store(inbound, t)
 	} else {
 		t = c.(*counter.TrafficCounter)
 	}
@@ -83,16 +108,17 @@ func (h *HookServer) RoutedConnection(_ context.Context, conn net.Conn, m adapte
 }
 
 func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn, m adapter.InboundContext, _ adapter.Rule, _ adapter.Outbound) N.PacketConn {
-	l, err := limiter.GetLimiter(m.Inbound)
+	inbound := h.resolveInboundTag(m.Inbound)
+	l, err := limiter.GetLimiter(inbound)
 	if err != nil {
-		log.Warn("get limiter for ", m.Inbound, " error: ", err)
+		log.Warn("get limiter for ", inbound, " error: ", err)
 		return conn
 	}
 	ip := m.Source.Addr.String()
-	taguuid := format.UserTag(m.Inbound, m.User)
+	taguuid := format.UserTag(inbound, m.User)
 	if b, r := l.CheckLimit(taguuid, ip, false, false); r {
 		conn.Close()
-		log.Error("[", m.Inbound, "] ", "Limited ", m.User, " by ip or conn")
+		log.Error("[", inbound, "] ", "Limited ", m.User, " by ip or conn")
 		return conn
 	} else if b != nil {
 		//conn = rate.NewPacketConnCounter(conn, b)
@@ -120,9 +146,9 @@ func (h *HookServer) RoutedPacketConnection(_ context.Context, conn N.PacketConn
 		}
 	}
 	var t *counter.TrafficCounter
-	if c, ok := h.counter.Load(m.Inbound); !ok {
+	if c, ok := h.counter.Load(inbound); !ok {
 		t = counter.NewTrafficCounter()
-		h.counter.Store(m.Inbound, t)
+		h.counter.Store(inbound, t)
 	} else {
 		t = c.(*counter.TrafficCounter)
 	}

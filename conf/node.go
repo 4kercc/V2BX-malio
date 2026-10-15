@@ -104,10 +104,16 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 }
 
 type Options struct {
-	Name                   string          `json:"Name"`
-	Core                   string          `json:"Core"`
-	CoreName               string          `json:"CoreName"`
-	ListenIP               string          `json:"ListenIP"`
+	Name     string `json:"Name"`
+	Core     string `json:"Core"`
+	CoreName string `json:"CoreName"`
+	ListenIP string `json:"ListenIP"`
+	// ListenIP6 is an optional second listen address for the same node, used as
+	// an IPv6 (or dual-stack "::") ingress. The node keeps its users, padding,
+	// certificate, limits and traffic accounting, and SendIP still decides which
+	// source address the traffic leaves with. Write a bare address (:: or
+	// 2401:db8::1), never a bracketed value or host:port pair.
+	ListenIP6              string          `json:"ListenIP6"`
 	SendIP                 string          `json:"SendIP"`
 	DeviceOnlineMinTraffic int64           `json:"DeviceOnlineMinTraffic"`
 	LimitConfig            LimitConfig     `json:"LimitConfig"`
