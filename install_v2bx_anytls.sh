@@ -4,8 +4,14 @@ set -e
 
 ############################################
 # 共用参数
+#
+# 多节点（推荐，一次装完整台机器）：
+#   NODE_IDS="37,38,39"  DOMAINS="a.com,b.com,c.com"（数量必须一致）
+#   两者都可用逗号/点号/空格分隔，节点数由 NODE_IDS 自动判定
+#
+# 位置参数（单节点，或配合多节点模式提供面板信息）：
 #   1 API_HOST   面板地址（如 https://72v.net）
-#   2 API_KEY    面板节点密钥
+#   2 API_KEY    面板节点密钥（多个节点用同一个就写一个；也可用逗号按序对应）
 #   3 NODE_ID    节点 ID
 #   4 DOMAIN     证书域名（写 null = 用自签证书）
 #   5 WARP_MODE  on/off（默认 on）
@@ -42,9 +48,53 @@ case "$WARP_MODE" in
   off|OFF|false|False|0|no|NO) WARP_ENABLED=false ;;
 esac
 
+# 多节点列表（NODE_IDS / DOMAINS，逗号/点号/空格分隔）
+NODE_IDS_IN="${NODE_IDS:-}"
+DOMAINS_IN="${DOMAINS:-}"
+MULTI_MODE=false
+if [[ -n "$NODE_IDS_IN" || -n "$DOMAINS_IN" ]]; then
+  MULTI_MODE=true
+fi
+
+split_list() { # $1=原始串 $2=分隔符正则（默认逗号/点号/空格）→ 逐行输出、去空白去空项
+  local raw="$1" sep="${2:-,. }"
+  printf '%s' "$raw" | tr "$sep" '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'
+}
+
+declare -a NODE_IDS_LIST DOMAINS_LIST KEYS_LIST
+if [[ "$MULTI_MODE" == "true" ]]; then
+  # 节点 ID：点号/逗号/空格都支持（37.38.39 / 37,38,39）
+  while IFS= read -r id; do NODE_IDS_LIST+=("$id"); done < <(split_list "$NODE_IDS_IN" ',. ')
+  # 域名：只按逗号/空格分（域名本身含点号）
+  while IFS= read -r dom; do DOMAINS_LIST+=("$dom"); done < <(split_list "$DOMAINS_IN" ', ')
+  if [[ ${#NODE_IDS_LIST[@]} -eq 0 || ${#DOMAINS_LIST[@]} -eq 0 ]]; then
+    echo "[ERROR] 多节点模式需要 NODE_IDS 与 DOMAINS（例：NODE_IDS=37,38,39 DOMAINS=a.com,b.com,c.com）"
+    exit 1
+  fi
+  if [[ ${#NODE_IDS_LIST[@]} -ne ${#DOMAINS_LIST[@]} ]]; then
+    echo "[ERROR] 节点数与域名数不一致：NODE_IDS=${#NODE_IDS_LIST[@]} 个（${NODE_IDS_LIST[*]}），DOMAINS=${#DOMAINS_LIST[@]} 个（${DOMAINS_LIST[*]}）"
+    exit 1
+  fi
+fi
+
+# 自签判定：域名写 null/NULL 视为自签（一台机器只能统一一种，因为共用一张证书）
 USE_SELF_SIGNED=false
-# 如果处于命令行非交互模式（前3个参数齐全），但第4个参数未传或为 null/NULL，则默认使用自签证书
-if [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
+null_domains=0
+total_domains=0
+if [[ "$MULTI_MODE" == "true" ]]; then
+  for idx in "${!DOMAINS_LIST[@]}"; do
+    total_domains=$((total_domains + 1))
+    if [[ "${DOMAINS_LIST[$idx]}" == "null" || "${DOMAINS_LIST[$idx]}" == "NULL" ]]; then
+      null_domains=$((null_domains + 1))
+      DOMAINS_LIST[$idx]="node${NODE_IDS_LIST[$idx]}.selfsigned.local"
+    fi
+  done
+  if [[ $null_domains -gt 0 && $null_domains -lt $total_domains ]]; then
+    echo "[ERROR] 自签(null) 与正式域名不能混用：本机所有节点共用一张证书"
+    exit 1
+  fi
+  [[ $null_domains -gt 0 ]] && USE_SELF_SIGNED=true
+elif [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
   if [[ -z "$DOMAIN" || "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
     USE_SELF_SIGNED=true
     DOMAIN="node${NODE_ID}.selfsigned.local"
@@ -84,11 +134,66 @@ has_public_v6() {
   return 1
 }
 
-if [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
+# 每节点密钥：给一个 = 全部共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应
+declare -a KEYS_LIST
+fill_keys() {
+  KEYS_LIST=()
+  if [[ "$API_KEY" == *","* ]]; then
+    local k
+    while IFS= read -r k; do KEYS_LIST+=("$k"); done < <(split_list "$API_KEY" ', ')
+    if [[ ${#KEYS_LIST[@]} -ne $NODE_COUNT ]]; then
+      echo "[ERROR] ApiKey 数量(${#KEYS_LIST[@]}) 与节点数($NODE_COUNT) 不一致"
+      exit 1
+    fi
+  else
+    for ((i=0; i<NODE_COUNT; i++)); do KEYS_LIST+=("$API_KEY"); done
+  fi
+}
+
+if [[ "$MULTI_MODE" == "true" ]]; then
+  ############################################
+  # 多节点模式（NODE_IDS="37,38,39" DOMAINS="a,b,c"）：完全非交互，一次装完整台机器
+  ############################################
+  AUTO_INSTALL=true
+  NODE_COUNT=${#NODE_IDS_LIST[@]}
+  NODE_IDS=("${NODE_IDS_LIST[@]}")
+  DOMAINS=("${DOMAINS_LIST[@]}")
+  LISTEN_IPS=(); LISTEN6_IPS=(); SEND_IPS=()
+  for ((i=0; i<NODE_COUNT; i++)); do
+    dom="${DOMAINS[$i]}"
+    if [[ -n "$LISTEN_OPT" ]]; then
+      LISTEN_IPS+=("$LISTEN_OPT")
+    elif [[ "$USE_SELF_SIGNED" == "true" ]]; then
+      LISTEN_IPS+=("0.0.0.0")
+    elif domain_points_here "$dom"; then
+      LISTEN_IPS+=("auto")
+    else
+      LISTEN_IPS+=("0.0.0.0")
+      echo "[提示] $dom 未解析到本机 -> 节点 ${NODE_IDS[$i]} 先监听 0.0.0.0（DNS 就绪后可改成 auto）"
+    fi
+    if [[ -n "$LISTEN6_OPT" ]]; then
+      LISTEN6_IPS+=("$LISTEN6_OPT")
+    elif [[ "$USE_SELF_SIGNED" == "true" ]]; then
+      LISTEN6_IPS+=("")
+    elif has_public_v6; then
+      LISTEN6_IPS+=("auto")
+    else
+      LISTEN6_IPS+=("")
+    fi
+    SEND_IPS+=("${SEND_OPT:-auto}")
+  done
+  ACME_EMAIL="${ACME_EMAIL:-v2bx@github.com}"
+  if [[ -z "$API_HOST" || -z "$API_KEY" ]]; then
+    echo "[ERROR] 多节点模式需要面板地址与密钥（位置参数 1/2，或 API_HOST / API_KEY 环境变量）"
+    exit 1
+  fi
+  fill_keys
+elif [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
   AUTO_INSTALL=true
   NODE_COUNT=1
   NODE_IDS=("$NODE_ID")
   DOMAINS=("$DOMAIN")
+  fill_keys
   # 命令行模式：默认 auto（按域名解析监听地址、出口跟随、v6 自动分配）
   if [[ -n "$LISTEN_OPT" ]]; then
     LISTEN_IPS=("$LISTEN_OPT")
@@ -415,7 +520,7 @@ gen_nodes() {
     {
       "Core": "sing",
       "ApiHost": "${API_HOST}",
-      "ApiKey": "${API_KEY}",
+      "ApiKey": "${KEYS_LIST[$i]:-$API_KEY}",
       "NodeID": ${NODE_IDS[$i]},
       "NodeType": "anytls",
       "Timeout": 30,

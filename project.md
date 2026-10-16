@@ -171,3 +171,5 @@
 * **`deploy-node.sh`（新增，soga 风格一条命令）**：`bash deploy-node.sh <NodeID> <域名> [ApiHost] [ApiKey]`；未安装则调标准安装脚本，已安装则**只追加/更新这一个节点**（按 NodeID 幂等，域名自动并入机器级 `CertDomains`），改完备份+`jq -e` 校验+重启+活性检查，失败打印回滚命令；域名未解析到本机时明确警告（auto 会解析失败）。
 * **`cloud-agent.sh`**：检测到机器级证书时，不再给节点写 `CertFile`/`KeyFile`（否则单域名自签会覆盖机器证书继承），只更新 `CertDomain` 并记日志；证书探测候选路径新增 `/etc/V2bX/cert/machine/fullchain.pem`；`AGENT_VER` 26 → 27。
 * 验证（沙箱，生产零改动）：安装脚本 `$1/$2` 注入生成的 config 被真实二进制正确解析（`ListenIP=auto resolved`、`SendIP=auto follows`、`Machine certificate is shared`、出口规则绑定）；`deploy-node.sh` 增量加节点后机器证书域名并集且老节点不动；agent 在机器证书机器上下发 CertDomain 只改域名、不写路径。
+
+* **v1.3.1 修正（节点级故障隔离）**：`ListenIP=auto` 解析失败（域名未解析到本机/没有域名）不再让**整机所有节点**退出，而是只标记该节点跳过（`conf.NodeConfig.Disabled` + 日志给出原因与修法），`node.Start` 跳过它、其它节点照常服务；被跳过的节点也不参与出口规则生成（避免 `Invalid SendIP auto` 噪音）。实测（真机 + 模拟面板）：一个域名不可解析时另一个节点仍在 18443 正常监听。

@@ -168,11 +168,45 @@ func TestListenIPAutoResolvesLandingDomain(t *testing.T) {
 	}
 }
 
-func TestListenIPAutoWithoutDomainFails(t *testing.T) {
-	nodes := []conf.NodeConfig{machineTestNode(37, "")}
-	nodes[0].Options.ListenIP = "auto"
-	if err := PrepareOptions(nil, nodes); err == nil {
-		t.Fatal("ListenIP=auto 没有域名可用时必须报错，而不是静默监听错误地址")
+func TestListenIPAutoWithoutDomainDisablesOnlyThatNode(t *testing.T) {
+	// 一个节点的域名没解析好，只能影响它自己：不能把同机其它节点一起拖下线
+	broken := machineTestNode(37, "")
+	broken.Options.ListenIP = "auto"
+	healthy := machineTestNode(38, "localhost")
+	healthy.Options.ListenIP = "auto"
+	healthy.Options.SendIP = "auto"
+
+	nodes := []conf.NodeConfig{broken, healthy}
+	if err := PrepareOptions(nil, nodes); err != nil {
+		t.Fatalf("prepare 不应因为单个节点失败而返回错误：%v", err)
+	}
+	if !nodes[0].Disabled || nodes[0].DisabledReason == "" {
+		t.Fatal("解析失败的节点必须被标记跳过并给出原因")
+	}
+	if nodes[1].Disabled {
+		t.Fatal("其它节点必须照常启动")
+	}
+	if nodes[1].Options.ListenIP != "127.0.0.1" {
+		t.Fatalf("正常节点仍要解析出地址，got %q", nodes[1].Options.ListenIP)
+	}
+}
+
+func TestDisabledFirstNodeStillLeavesACertificateOwner(t *testing.T) {
+	// 被跳过的节点不能占走 owner：否则没人签发机器证书
+	broken := machineTestNode(37, "")
+	broken.Options.ListenIP = "auto"
+	second := machineTestNode(38, "localhost")
+	machine := &conf.CertConfig{CertMode: "http", CertDomains: []string{"a.example.com"}}
+
+	nodes := []conf.NodeConfig{broken, second}
+	if err := PrepareOptions(machine, nodes); err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if !nodes[1].Options.CertConfig.CertOwner {
+		t.Fatal("第一个可用节点必须接手 owner（负责签发与续期）")
+	}
+	if nodes[0].Options.CertConfig.CertOwner {
+		t.Fatal("被跳过的节点不能是 owner")
 	}
 }
 

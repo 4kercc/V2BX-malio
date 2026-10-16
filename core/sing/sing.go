@@ -89,6 +89,11 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 		var autoRules []option.Rule
 
 		for _, nodeConf := range c.SingConfig.NodesConfig {
+			// A disabled node never starts (see node.PrepareOptions), so it needs
+			// neither an exit outbound nor a routing rule.
+			if nodeConf.Disabled {
+				continue
+			}
 			sendIP := nodeConf.Options.SendIP
 			if sendIP == "" || sendIP == "0.0.0.0" || sendIP == "::" {
 				continue

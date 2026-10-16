@@ -1,22 +1,29 @@
 #!/bin/bash
 ############################################
-# V2bX AnyTLS 节点部署（soga 风格：一条命令 + $1/$2 注入变量）
+# V2bX AnyTLS 节点部署（soga 风格：一条命令 + $1/$2 注入，支持多节点一次装完）
 #
-#   bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) <NodeID> <域名> [ApiHost] [ApiKey]
+#   bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) \
+#        <NodeID列表> <域名列表> [ApiHost] [ApiKey]
 #
-#   例：
-#     bash deploy-node.sh 37 hytron1.wukong.us.kg        # 完整域名
-#     bash deploy-node.sh 38 hytron1-1                   # 只写前缀 -> 拼 DOMAIN_SUFFIX（默认 stpikit.com）
+#   例（3 个节点一次装完）：
+#     bash deploy-node.sh 37,38,39 \
+#          hytron1.wukong.us.kg,hytron2.wukong.us.kg,hytron3.wukong.us.kg \
+#          https://72v.net wukongs
+#
+#     · NodeID 支持逗号或点号分隔：37,38,39 / 37.38.39
+#     · 节点数量由 $1 自动判定，域名按顺序一一对应（数量必须一致）
+#     · 域名可只写前缀（hytron1）→ 自动拼 DOMAIN_SUFFIX（默认 stpikit.com）
+#     · ApiKey 给一个 = 全部共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应
 #
 #   行为：
-#     · 机器上还没有 V2bX → 调标准安装脚本装好（含 WARP 分流/系统调优/服务），再写这个节点
-#     · 已经在跑      → 只追加/更新这一个节点，域名自动并入机器级证书
+#     · 机器上还没有 V2bX → 调标准安装脚本一次装完（含 WARP 分流/系统调优/systemd）
+#     · 已经在跑      → 只追加/更新这些节点，域名自动并入机器级证书
 #                       （一张证书覆盖全机所有域名，只由第一个节点签发与续期）
 #     · 地址默认全自动：ListenIP=auto（按该节点域名的 A 记录）、SendIP=auto（同进同出）、
 #       ListenIP6=auto（本机空闲公网 v6，按节点固定）
 #
 # 环境变量（都可省）：
-#   API_HOST / API_KEY       面板地址与节点密钥（缺省则交互询问）
+#   API_HOST / API_KEY       面板地址与密钥（缺省则交互询问）
 #   DOMAIN_SUFFIX            域名后缀，默认 stpikit.com（$2 已含点号时忽略）
 #   LISTEN / LISTEN6 / SEND  覆盖地址（默认 auto；SEND 可写 0 表示不绑定）
 #   CERT_KEY_TYPE            证书密钥类型，默认 ec-256
@@ -30,8 +37,8 @@ red='\033[0;31m'; green='\033[0;32m'; yellow='\033[0;33m'; plain='\033[0m'
 
 [[ $EUID -ne 0 ]] && { echo -e "${red}必须使用 root 运行${plain}"; exit 1; }
 
-NODEID="${1:-}"
-DOMAIN_IN="${2:-}"
+IDS_IN="${1:-}"
+DOMAINS_IN="${2:-}"
 API_HOST="${3:-${API_HOST:-}}"
 API_KEY="${4:-${API_KEY:-}}"
 DOMAIN_SUFFIX="${DOMAIN_SUFFIX:-stpikit.com}"
@@ -48,30 +55,48 @@ BIN="/usr/local/V2bX/V2bX"
 REPO_RAW="https://raw.githubusercontent.com/4kercc/V2BX-malio/main"
 
 usage() {
-  echo "用法: bash deploy-node.sh <NodeID> <域名> [ApiHost] [ApiKey]"
-  echo "  例:  bash deploy-node.sh 37 hytron1.wukong.us.kg"
-  echo "       bash deploy-node.sh 38 hytron1-1"
+  echo "用法: bash deploy-node.sh <NodeID列表> <域名列表> [ApiHost] [ApiKey]"
+  echo "  例:  bash deploy-node.sh 37,38,39 a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg https://72v.net <密钥>"
+  echo "       bash deploy-node.sh 37 hytron1-1                  # 单节点，只写前缀（拼 DOMAIN_SUFFIX）"
   exit 1
 }
 
-[[ -z "$NODEID" || -z "$DOMAIN_IN" ]] && usage
-[[ "$NODEID" =~ ^[0-9]+$ ]] || { echo -e "${red}NodeID 必须是数字${plain}"; exit 1; }
+[[ -z "$IDS_IN" || -z "$DOMAINS_IN" ]] && usage
 
-# 域名：含点号视为完整域名，否则拼后缀
-if [[ "$DOMAIN_IN" == *.* ]]; then
-  DOMAIN="$DOMAIN_IN"
-else
-  DOMAIN="${DOMAIN_IN}.${DOMAIN_SUFFIX}"
+# 列表切分：NodeID 支持 , . 空格；域名按 , 或空格（域名本身含点号）
+split_list() { printf '%s' "$1" | tr "$2" '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'; }
+
+declare -a IDS DOMAINS
+while IFS= read -r id; do IDS+=("$id"); done < <(split_list "$IDS_IN" ',. ')
+while IFS= read -r d; do DOMAINS+=("$d"); done < <(split_list "$DOMAINS_IN" ', ')
+
+COUNT=${#IDS[@]}
+if [[ $COUNT -eq 0 || ${#DOMAINS[@]} -eq 0 ]]; then usage; fi
+if [[ ${#DOMAINS[@]} -ne $COUNT ]]; then
+  echo -e "${red}节点数与域名数不一致：NodeID ${#IDS[@]} 个，域名 ${#DOMAINS[@]} 个${plain}"
+  echo "  NodeID : ${IDS[*]}"
+  echo "  域名   : ${DOMAINS[*]}"
+  exit 1
 fi
-[[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { echo -e "${red}域名格式不对: $DOMAIN${plain}"; exit 1; }
+
+# 校验并补全域名
+declare -a FULL_DOMAINS
+for i in "${!IDS[@]}"; do
+  [[ "${IDS[$i]}" =~ ^[0-9]+$ ]] || { echo -e "${red}NodeID 不是数字: ${IDS[$i]}${plain}"; exit 1; }
+  d="${DOMAINS[$i]}"
+  if [[ "$d" != *.* ]]; then d="${d}.${DOMAIN_SUFFIX}"; fi
+  [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { echo -e "${red}域名格式不对: $d${plain}"; exit 1; }
+  FULL_DOMAINS+=("$d")
+done
 
 if [[ -z "$API_HOST" ]]; then read -rp "ApiHost (面板地址，如 https://72v.net): " API_HOST; fi
-if [[ -z "$API_KEY"  ]]; then read -rp "ApiKey  (该节点的面板密钥): " API_KEY; fi
+if [[ -z "$API_KEY"  ]]; then read -rp "ApiKey  (面板密钥；多个节点可用逗号按序给): " API_KEY; fi
 [[ -z "$API_HOST" || -z "$API_KEY" ]] && { echo -e "${red}缺少 ApiHost / ApiKey${plain}"; exit 1; }
 
-echo "==== 部署节点 ===="
-echo "  NodeID   : $NODEID"
-echo "  域名     : $DOMAIN"
+echo "==== 部署节点（自动判定节点数：$COUNT） ===="
+for i in "${!IDS[@]}"; do
+  echo "  [$((i+1))/$COUNT] NodeID=${IDS[$i]}  域名=${FULL_DOMAINS[$i]}"
+done
 echo "  面板     : $API_HOST"
 echo "  监听/出口: $LISTEN / $LISTEN6 / $SEND（auto = 自动推导）"
 echo ""
@@ -86,22 +111,23 @@ domain_points_here() {
 }
 
 ############################################
-# 首次安装：本机没有 V2bX 时就地调用标准安装脚本
+# 首次安装：本机没有 V2bX 时，交给标准安装脚本一次装完整机
 ############################################
 if [[ ! -f "$CONFIG_JSON" || ! -x "$BIN" ]]; then
   echo "本机未安装 V2bX，先走标准安装（含 WARP 分流 / 系统调优 / systemd 服务）..."
-  INST_ARGS=("$API_HOST" "$API_KEY" "$NODEID" "$DOMAIN" "$WARP_MODE")
+  NODE_IDS=$(printf '%s,' "${IDS[@]}"); NODE_IDS="${NODE_IDS%,}"
+  DOMAINS_ENV=$(printf '%s,' "${FULL_DOMAINS[@]}"); DOMAINS_ENV="${DOMAINS_ENV%,}"
+  # 位置参数：1 ApiHost、2 ApiKey、3/4 留空（多节点模式走 NODE_IDS/DOMAINS 环境变量）、5 WARP、6/7 云控
+  INST_ARGS=("$API_HOST" "$API_KEY" "" "" "$WARP_MODE")
   [[ -n "$CLOUD_URL"   ]] && INST_ARGS+=("$CLOUD_URL")
   [[ -n "$CLOUD_TOKEN" ]] && INST_ARGS+=("$CLOUD_TOKEN")
-  LISTEN="$LISTEN" LISTEN6="$LISTEN6" SEND="$SEND" CERT_KEY_TYPE="$CERT_KEY_TYPE" \
+  NODE_IDS="$NODE_IDS" DOMAINS="$DOMAINS_ENV" LISTEN="$LISTEN" LISTEN6="$LISTEN6" SEND="$SEND" \
+    CERT_KEY_TYPE="$CERT_KEY_TYPE" \
     bash <(curl -Ls "${REPO_RAW}/install_v2bx_anytls.sh") "${INST_ARGS[@]}"
-  echo -e "${green}✓ 安装完成，节点 $NODEID（$DOMAIN）已启动${plain}"
+  echo -e "${green}✓ 安装完成，$COUNT 个节点已启动${plain}"
   exit 0
 fi
 
-############################################
-# 已安装：追加/更新这一个节点（幂等，按 NodeID 匹配）
-############################################
 ############################################
 # 已安装：先确认二进制支持新写法（auto 地址 / 机器级证书需要 v1.3.0+）
 ############################################
@@ -114,53 +140,70 @@ if [[ -n "$CUR_VER" ]] && [[ "$(printf '%s\nv1.3.0\n' "$CUR_VER" | sort -V | hea
 fi
 command -v jq >/dev/null || { echo "安装 jq..."; (apt install -y jq || yum install -y jq) >/dev/null 2>&1; }
 
+############################################
+# 逐节点追加/更新（按 NodeID 幂等），域名并集进机器级证书
+############################################
 LISTEN6_VALUE="$LISTEN6"
 if [[ "$LISTEN6" == "auto" ]] && ! has_public_v6; then
   LISTEN6_VALUE=""
-  echo -e "${yellow}[提示] 本机没有公网 IPv6，$NODEID 不启用 v6 入口${plain}"
+  echo -e "${yellow}[提示] 本机没有公网 IPv6，本次不启用 v6 入口${plain}"
 fi
 
 TS=$(date +%Y%m%d-%H%M%S)
 cp -a "$CONFIG_JSON" "${CONFIG_JSON}.bak-$TS"
 echo "已备份配置: ${CONFIG_JSON}.bak-$TS"
 
-NODE_JSON=$(jq -nc \
-  --arg host "$API_HOST" --arg key "$API_KEY" --argjson nid "$NODEID" \
-  --arg dom "$DOMAIN" --arg listen "$LISTEN" --arg listen6 "$LISTEN6_VALUE" --arg send "$SEND" \
-  '{Core:"sing", ApiHost:$host, ApiKey:$key, NodeID:$nid, NodeType:"anytls", Timeout:30,
-    ListenIP:$listen, SendIP:$send, DeviceOnlineMinTraffic:200, MinReportTraffic:0,
-    TCPFastOpen:false, SniffEnabled:true,
-    CertConfig:{CertDomain:$dom}}
-   + (if $listen6 != "" then {ListenIP6:$listen6} else {} end)')
+KEYS=()
+if [[ "$API_KEY" == *","* ]]; then
+  while IFS= read -r k; do KEYS+=("$k"); done < <(split_list "$API_KEY" ', ')
+  if [[ ${#KEYS[@]} -ne $COUNT ]]; then
+    echo -e "${red}ApiKey 数量(${#KEYS[@]}) 与节点数($COUNT) 不一致${plain}"; exit 1
+  fi
+else
+  for ((i=0; i<COUNT; i++)); do KEYS+=("$API_KEY"); done
+fi
 
-NEW_CONFIG=$(jq \
-  --argjson node "$NODE_JSON" \
-  --arg dom "$DOMAIN" \
-  --arg keytype "$CERT_KEY_TYPE" \
-  --arg mode "$([[ "$DOMAIN" == *.selfsigned.local ]] && echo self || echo http)" \
-  '
-  # 1) 追加或更新该节点（按 NodeID 匹配）
-  .Nodes = ((.Nodes // []) | map(select(.NodeID != $node.NodeID)) + [$node])
-  # 2) 机器级证书：域名并集去重（一张证书覆盖全机）
-  | .Cert = ((.Cert // {}) + {
-      CertMode: ((.Cert.CertMode // $mode)),
-      KeyType: ((.Cert.KeyType // $keytype)),
-      CertDomains: (((.Cert.CertDomains // []) + [$dom]) | unique)
-    })
-  | if (.Cert.CertDomains | length) == 0 then del(.Cert.CertDomains) else . end
-  | if (.Cert.Email // "") == "" then .Cert.Email = "v2bx@github.com" else . end
-  ' "$CONFIG_JSON")
+UPDATED="$CONFIG_JSON"
+for i in "${!IDS[@]}"; do
+  NODE_JSON=$(jq -nc \
+    --arg host "$API_HOST" --arg key "${KEYS[$i]}" --argjson nid "${IDS[$i]}" \
+    --arg dom "${FULL_DOMAINS[$i]}" --arg listen "$LISTEN" --arg listen6 "$LISTEN6_VALUE" --arg send "$SEND" \
+    '{Core:"sing", ApiHost:$host, ApiKey:$key, NodeID:$nid, NodeType:"anytls", Timeout:30,
+      ListenIP:$listen, SendIP:$send, DeviceOnlineMinTraffic:200, MinReportTraffic:0,
+      TCPFastOpen:false, SniffEnabled:true,
+      CertConfig:{CertDomain:$dom}}
+     + (if $listen6 != "" then {ListenIP6:$listen6} else {} end)')
 
-echo "$NEW_CONFIG" | jq -e . >/dev/null || { echo -e "${red}生成的新配置不是合法 JSON，已保留原配置不动${plain}"; exit 1; }
-echo "$NEW_CONFIG" > "${CONFIG_JSON}.tmp" && mv "${CONFIG_JSON}.tmp" "$CONFIG_JSON"
+  jq --argjson node "$NODE_JSON" --arg dom "${FULL_DOMAINS[$i]}" --arg keytype "$CERT_KEY_TYPE" '
+    # 该节点按标准模板重写；只保留运维自己加的东西（自定义 Name / 限速配置），
+    # 证书相关字段一律丢弃（改为继承机器级证书）
+    . as $cfg
+    | ($cfg.Nodes // [] | map(select(.NodeID == $node.NodeID)) | .[0] // {}) as $old
+    | $node + (if ($old.Name // "") != "" then {Name: $old.Name} else {} end)
+              + (if ($old.LimitConfig // null) != null then {LimitConfig: $old.LimitConfig} else {} end)
+    | . as $new
+    | $cfg
+    | .Nodes = (($cfg.Nodes // [] | map(select(.NodeID != $node.NodeID))) + [$new])
+    | .Cert = ((.Cert // {}) + {
+        CertMode: ((.Cert.CertMode // "http")),
+        KeyType: ((.Cert.KeyType // $keytype)),
+        CertDomains: (((.Cert.CertDomains // []) + [$dom]) | unique)
+      })
+    | if (.Cert.Email // "") == "" then .Cert.Email = "v2bx@github.com" else . end
+    ' "$UPDATED" > "${UPDATED}.tmp" && mv "${UPDATED}.tmp" "$UPDATED"
+done
+
+jq -e . "$UPDATED" >/dev/null || { echo -e "${red}生成的新配置不是合法 JSON，已保留原配置不动${plain}"; exit 1; }
 
 echo ""
 echo "==== 配置结果 ===="
-jq -c '{Cert, Nodes: [.Nodes[] | {NodeID, ListenIP, ListenIP6, SendIP, CertDomain: .CertConfig.CertDomain}]}' "$CONFIG_JSON"
+jq -c '{Cert, Nodes: [.Nodes[] | {NodeID, ListenIP, ListenIP6, SendIP, CertDomain: .CertConfig.CertDomain}]}' "$UPDATED"
 
-if ! domain_points_here "$DOMAIN"; then
-  echo -e "${yellow}[注意] $DOMAIN 当前未解析到本机：ListenIP=auto 会解析失败导致节点起不来。${plain}"
-  echo -e "${yellow}       请先把 A 记录指过来，或把该节点 ListenIP 改成 0.0.0.0。${plain}"
+NEED_DNS=false
+for d in "${FULL_DOMAINS[@]}"; do domain_points_here "$d" || NEED_DNS=true; done
+if [[ "$NEED_DNS" == "true" ]]; then
+  echo -e "${yellow}[注意] 有域名当前未解析到本机：这些节点若用 ListenIP=auto 会解析失败起不来。${plain}"
+  echo -e "${yellow}       请先把 A 记录指过来，或把该节点的 ListenIP 改成 0.0.0.0。${plain}"
 fi
 
 echo ""
@@ -168,7 +211,7 @@ echo "重启 V2bX ..."
 systemctl restart V2bX
 sleep 5
 if systemctl is-active --quiet V2bX; then
-  echo -e "${green}✓ V2bX 运行中${plain}"
+  echo -e "${green}✓ V2bX 运行中（$COUNT 个节点）${plain}"
 else
   echo -e "${red}✗ V2bX 未起来，最近日志：${plain}"
   journalctl -u V2bX -n 15 --no-pager | tail -15
@@ -178,13 +221,13 @@ fi
 
 echo ""
 echo "==== 关键日志 ===="
-journalctl -u V2bX --since "-30s" --no-pager | grep -aE "ListenIP=auto|ListenIP6=auto|SendIP=auto|Machine certificate|acme:|Node started|tcp server started" | tail -10 || true
+journalctl -u V2bX --since "-40s" --no-pager | grep -aE "ListenIP=auto|ListenIP6=auto|SendIP=auto|Machine certificate|acme:|Node started|tcp server started" | tail -12 || true
 
 echo ""
 echo "下一步："
-echo "  1) 给 $DOMAIN 配好 A 记录（指向本机）"
+echo "  1) 给这些域名配好 A 记录（指向本机）: ${FULL_DOMAINS[*]}"
 if [[ -n "$LISTEN6_VALUE" ]]; then
-  ADDR6=$(journalctl -u V2bX --since "-1min" --no-pager | grep -a "ListenIP6=auto ->" | tail -1 | sed 's/.*-> //')
-  [[ -n "$ADDR6" ]] && echo "  2) 给 $DOMAIN 配 AAAA 记录: $ADDR6"
+  echo "  2) 如需 v6 入口，给域名加 AAAA（下面是本次分配到的 v6 地址）："
+  journalctl -u V2bX --since "-2min" --no-pager | grep -a "ListenIP6=auto ->" | tail -"$COUNT" | sed 's/^.*Node /     /' || true
 fi
-echo "  3) 面板里该节点的 server 填 $DOMAIN，端口 443"
+echo "  3) 面板里这些节点的 server 填对应域名，端口 443（节点类型 anytls）"

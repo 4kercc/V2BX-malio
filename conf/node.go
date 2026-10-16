@@ -14,6 +14,12 @@ import (
 type NodeConfig struct {
 	ApiConfig ApiConfig `json:"-"`
 	Options   Options   `json:"-"`
+	// Disabled marks a node that must not be started: startup preparation found
+	// something only that node can fix (for example ListenIP=auto whose landing
+	// domain does not resolve yet). One broken node must not take the machine's
+	// other nodes down with it.
+	Disabled       bool   `json:"-"`
+	DisabledReason string `json:"-"`
 }
 
 type rawNodeConfig struct {

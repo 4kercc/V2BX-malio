@@ -99,7 +99,7 @@
 
 | 写法 | 含义 |
 |---|---|
-| `ListenIP: "auto"` | 解析该节点**自己的** `CertDomain` 的 A 记录（多个 A 取最小并告警；解析失败重试 3 次后报错，**不会静默监听错误地址**） |
+| `ListenIP: "auto"` | 解析该节点**自己的** `CertDomain` 的 A 记录（多个 A 取最小并告警）；解析失败（含没有域名可用）重试 3 次后**只跳过这一个节点并明确告警**，同机其它节点照常运行（绝不静默监听错误地址，也绝不因为一个节点把整机拖下线） |
 | `SendIP: "auto"` | = 解析后的监听地址（IPv4/IPv6 具体地址都算）；监听是通配（`0.0.0.0`/`::`）时不绑定并告警 |
 | `ListenIP6: "auto"` | 在本机公网 v6 里取一个空闲地址，**按节点固定**（重载不漂移，AAAA 记录稳定）；其它节点显式配置的地址不会被拿走；本机没有空闲 v6 时只跳过 v6 入口（节点照常起） |
 
@@ -142,17 +142,30 @@ journalctl -u V2bX | grep "Auto-configured outbound node_"
 
 ## 6. 安装与部署：填哪些字段
 
-### 6.1 一条命令加一个节点（推荐，soga 风格）
+### 6.1 一条命令装完整台机器（推荐，soga 风格 + 多节点）
 
 ```bash
-# 首次安装（本机还没有 V2bX）：会走标准安装 + 写这个节点
-bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) 37 hytron1.wukong.us.kg https://72v.net <面板密钥>
-
-# 同一台机器再加节点：只追加，域名自动并入机器级证书
-bash <(curl -Ls .../deploy-node.sh) 38 hytron1-1.wukong.us.kg
+bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) \
+     37,38,39 \
+     hytron1.wukong.us.kg,hytron2.wukong.us.kg,hytron3.wukong.us.kg \
+     https://72v.net wukongs
 ```
 
-参数：`$1`=NodeID（必填）、`$2`=域名（必填；只写前缀时用 `DOMAIN_SUFFIX`，默认 `stpikit.com`）、`$3`=ApiHost、`$4`=ApiKey（也可用环境变量 `API_HOST`/`API_KEY`，缺省会交互询问）。
+- **节点数由 `$1` 自动判定**：NodeID 支持逗号或点号（`37,38,39` / `37.38.39`），域名按顺序一一对应；数量不一致会直接报错并列出两串；
+- 域名可只写前缀（`hytron1`）→ 自动拼 `DOMAIN_SUFFIX`（默认 `stpikit.com`）；
+- `ApiKey` 给**一个** = 全部节点共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应；
+- 机器上没有 V2bX → 调标准安装脚本**一次装完整机**（WARP 分流 / 系统调优 / systemd / 新式配置）；已经装过 → 只追加/更新这些节点（保留手工加的自定义 `Name` 与 `LimitConfig`，证书字段统一改成继承机器证书）；
+- 地址默认全自动：`ListenIP=auto`（按各节点自己域名的 A 记录；**未解析到本机的节点会被单独跳过并告警，不影响同机其它节点**）、`SendIP=auto`（同进同出）、`ListenIP6=auto`（本机空闲公网 v6，按节点固定分配）；
+- 已安装时脚本先查二进制版本：低于 v1.3.0 会拦住并提示升级（老二进制不支持 `auto`）。
+
+只加/改一个节点也用同一条命令：`bash deploy-node.sh 38 hytron1-1`。
+
+也可以跳过包装脚本，直接用安装脚本的多节点模式（环境变量注入）：
+
+```bash
+NODE_IDS="37,38,39" DOMAINS="a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg" \
+  bash <(curl -Ls .../install_v2bx_anytls.sh) https://72v.net wukongs
+```
 
 可选环境变量：`LISTEN` / `LISTEN6` / `SEND`（默认全是 `auto`）、`CERT_KEY_TYPE`（默认 `ec-256`）、`WARP_MODE`（默认 on，仅首次安装）、`CLOUD_URL` / `CLOUD_TOKEN`（顺带接入云控，仅首次安装）。
 

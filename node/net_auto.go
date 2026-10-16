@@ -38,7 +38,14 @@ func PrepareOptions(machineCert *conf.CertConfig, nodes []conf.NodeConfig) error
 		// machine block carries every node's domain and would resolve to another
 		// node's IP.
 		if err := resolveAutoAddress(opt, label); err != nil {
-			return err
+			// Only this node can fix it (DNS not set up yet, typo, or a landing
+			// domain that is not this machine's). Skip the node instead of
+			// failing the whole process: the machine's other nodes keep serving.
+			nodes[i].Disabled = true
+			nodes[i].DisabledReason = err.Error()
+			log.WithFields(log.Fields{"node": label, "err": err}).Error(
+				"节点已跳过：ListenIP=auto 依赖该节点域名解析到本机，请先配好 A 记录，或把该节点的 ListenIP 改成 0.0.0.0 / 具体 IP 后重启")
+			continue
 		}
 		if mc != nil {
 			opt.CertConfig = conf.MergeCertConfig(mc, opt.CertConfig)
