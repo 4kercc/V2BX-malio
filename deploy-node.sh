@@ -29,6 +29,7 @@
 #   CERT_KEY_TYPE            证书密钥类型，默认 ec-256
 #   WARP_MODE                on/off（仅首次安装时生效，默认 on）
 #   CLOUD_URL / CLOUD_TOKEN  顺带接入云控中心（仅首次安装时生效）
+#   SKIP_DNS_CHECK            跳过安装前 DNS 预检（默认：域名必须解析到本机，否则提示并退出）
 ############################################
 
 set -e
@@ -79,12 +80,18 @@ if [[ ${#DOMAINS[@]} -ne $COUNT ]]; then
   exit 1
 fi
 
-# 校验并补全域名
+# 校验并补全域名（写 null = 自签）
 declare -a FULL_DOMAINS
+SELF_SIGNED=false
 for i in "${!IDS[@]}"; do
   [[ "${IDS[$i]}" =~ ^[0-9]+$ ]] || { echo -e "${red}NodeID 不是数字: ${IDS[$i]}${plain}"; exit 1; }
   d="${DOMAINS[$i]}"
-  if [[ "$d" != *.* ]]; then d="${d}.${DOMAIN_SUFFIX}"; fi
+  if [[ "$d" == "null" || "$d" == "NULL" ]]; then
+    SELF_SIGNED=true
+    d="node${IDS[$i]}.selfsigned.local"
+  elif [[ "$d" != *.* ]]; then
+    d="${d}.${DOMAIN_SUFFIX}"
+  fi
   [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { echo -e "${red}域名格式不对: $d${plain}"; exit 1; }
   FULL_DOMAINS+=("$d")
 done
@@ -104,11 +111,69 @@ echo ""
 has_public_v6() { ip -6 -o addr show scope global 2>/dev/null | grep -q 'inet6 ' ; }
 domain_points_here() {
   local dom="$1" ip local_ips
+  [[ -z "$dom" ]] && return 1
   ip=$(getent ahostsv4 "$dom" 2>/dev/null | awk 'NR==1{print $1}')
   [[ -z "$ip" ]] && return 1
   local_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}')
   grep -qxF "$ip" <<<"$local_ips"
 }
+local_ipv4_addrs() { ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | sort -u; }
+
+############################################
+# DNS 预检：证书域名必须解析到本机，否则打印诊断并退出（不做任何更改）
+#   跳过：SKIP_DNS_CHECK=1，或"显式 LISTEN + dns-01 签发"
+############################################
+dns_preflight() {
+  local dom resolved ip hit local_ips bad=0 others
+  local_ips=$(local_ipv4_addrs)
+  echo ""
+  echo "==== DNS 预检（证书域名需要解析到本机）===="
+  echo "  本机 IPv4: $(tr '\n' ' ' <<<"$local_ips")"
+  for dom in "$@"; do
+    [[ -z "$dom" || "$dom" == *.selfsigned.local ]] && continue
+    resolved=$(getent ahostsv4 "$dom" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+    hit=""
+    for ip in $resolved; do grep -qxF "$ip" <<<"$local_ips" && { hit="$ip"; break; }; done
+    if [[ -z "${resolved// /}" ]]; then
+      echo "  ✗ $dom: 没有 A 记录（DNS 未配置或尚未生效）"; bad=1
+    elif [[ -n "$hit" ]]; then
+      others=""
+      for ip in $resolved; do [[ "$ip" != "$hit" ]] && others+="$ip "; done
+      if [[ -n "$others" ]]; then
+        echo "  ✓ $dom: $resolved（命中本机 $hit；⚠ 另有 $others 不指向本机，http-01 可能随机打到那边失败）"
+      else
+        echo "  ✓ $dom: $resolved（命中本机）"
+      fi
+    else
+      echo "  ✗ $dom: 解析到 $resolved，不在本机"; bad=1
+    fi
+  done
+  [[ $bad -eq 0 ]] && { echo "  预检通过"; return 0; }
+  if [[ "${SKIP_DNS_CHECK:-}" == "1" ]]; then
+    echo ""; echo "  [跳过] SKIP_DNS_CHECK=1：继续。未解析到本机的节点会在启动时被单独跳过并告警。"
+    return 0
+  fi
+  echo ""
+  echo "  ── DNS 预检未通过，已退出（未做任何更改）──"
+  echo "  处理办法（任选其一）："
+  echo "    1) 去 DNS 服务商把上面的域名 A 记录改成本机 IP，等生效后重跑本脚本"
+  echo "       （Cloudflare 开了代理小云朵时会隐藏源站 IP：http-01 通常仍可用，确认无误可加 SKIP_DNS_CHECK=1）"
+  echo "    2) 域名本来就不指向本机（跨机 / 中转）：CERT_DNS_PROVIDER=cloudflare CF_DNS_API_TOKEN=xxx LISTEN=0.0.0.0 重跑"
+  echo "    3) 现在就要装、DNS 稍后再配：加 SKIP_DNS_CHECK=1 重跑（该节点会被跳过，配好 DNS 重启即可）"
+  echo ""
+  exit 1
+}
+
+############################################
+# DNS 预检（本脚本先做一遍；委托安装脚本时会跳过它那边的重复检查）
+############################################
+if [[ "$SELF_SIGNED" == "true" ]]; then
+  echo "自签证书模式：跳过 DNS 预检（不使用证书域名）。"
+elif [[ -n "$CERT_DNS_PROVIDER" && "$LISTEN" != "auto" ]]; then
+  echo "已配置 dns-01（$CERT_DNS_PROVIDER）+ 显式 ListenIP=$LISTEN：域名无需指向本机，跳过 DNS 预检。"
+else
+  dns_preflight "${FULL_DOMAINS[@]}"
+fi
 
 ############################################
 # 首次安装：本机没有 V2bX 时，交给标准安装脚本一次装完整机
@@ -122,7 +187,7 @@ if [[ ! -f "$CONFIG_JSON" || ! -x "$BIN" ]]; then
   [[ -n "$CLOUD_URL"   ]] && INST_ARGS+=("$CLOUD_URL")
   [[ -n "$CLOUD_TOKEN" ]] && INST_ARGS+=("$CLOUD_TOKEN")
   NODE_IDS="$NODE_IDS" DOMAINS="$DOMAINS_ENV" LISTEN="$LISTEN" LISTEN6="$LISTEN6" SEND="$SEND" \
-    CERT_KEY_TYPE="$CERT_KEY_TYPE" \
+    CERT_KEY_TYPE="$CERT_KEY_TYPE" SKIP_DNS_CHECK=1 \
     bash <(curl -Ls "${REPO_RAW}/install_v2bx_anytls.sh") "${INST_ARGS[@]}"
   echo -e "${green}✓ 安装完成，$COUNT 个节点已启动${plain}"
   exit 0
@@ -174,7 +239,8 @@ for i in "${!IDS[@]}"; do
       CertConfig:{CertDomain:$dom}}
      + (if $listen6 != "" then {ListenIP6:$listen6} else {} end)')
 
-  jq --argjson node "$NODE_JSON" --arg dom "${FULL_DOMAINS[$i]}" --arg keytype "$CERT_KEY_TYPE" '
+  jq --argjson node "$NODE_JSON" --arg dom "${FULL_DOMAINS[$i]}" --arg keytype "$CERT_KEY_TYPE" \
+     --arg mode "$([[ "$SELF_SIGNED" == "true" ]] && echo self || echo http)" '
     # 该节点按标准模板重写；只保留运维自己加的东西（自定义 Name / 限速配置），
     # 证书相关字段一律丢弃（改为继承机器级证书）
     . as $cfg
@@ -185,7 +251,7 @@ for i in "${!IDS[@]}"; do
     | $cfg
     | .Nodes = (($cfg.Nodes // [] | map(select(.NodeID != $node.NodeID))) + [$new])
     | .Cert = ((.Cert // {}) + {
-        CertMode: ((.Cert.CertMode // "http")),
+        CertMode: ((.Cert.CertMode // $mode)),
         KeyType: ((.Cert.KeyType // $keytype)),
         CertDomains: (((.Cert.CertDomains // []) + [$dom]) | unique)
       })

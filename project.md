@@ -173,3 +173,5 @@
 * 验证（沙箱，生产零改动）：安装脚本 `$1/$2` 注入生成的 config 被真实二进制正确解析（`ListenIP=auto resolved`、`SendIP=auto follows`、`Machine certificate is shared`、出口规则绑定）；`deploy-node.sh` 增量加节点后机器证书域名并集且老节点不动；agent 在机器证书机器上下发 CertDomain 只改域名、不写路径。
 
 * **v1.3.1 修正（节点级故障隔离）**：`ListenIP=auto` 解析失败（域名未解析到本机/没有域名）不再让**整机所有节点**退出，而是只标记该节点跳过（`conf.NodeConfig.Disabled` + 日志给出原因与修法），`node.Start` 跳过它、其它节点照常服务；被跳过的节点也不参与出口规则生成（避免 `Invalid SendIP auto` 噪音）。实测（真机 + 模拟面板）：一个域名不可解析时另一个节点仍在 18443 正常监听。
+
+* **v1.3.1 追加：安装前 DNS 预检**：`install_v2bx_anytls.sh` 与 `deploy-node.sh` 在动系统之前先校验证书域名是否解析到本机——不通就打印"域名 → 解析结果 → 本机 IP"的诊断与三种处理办法（改 DNS / 用 dns-01 / `SKIP_DNS_CHECK=1`）后 **exit 1 且不做任何更改**；自签模式与"dns-01+显式 ListenIP"自动跳过预检。沙箱六个场景实测：双域名通过、坏域名拦截退出、跳过开关、dns-01 豁免、自签豁免、deploy 增量路径同样拦截。

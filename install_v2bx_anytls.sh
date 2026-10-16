@@ -23,6 +23,7 @@ set -e
 #   SEND=auto                    出口地址（auto=跟随监听地址，同进同出；0=不绑定）
 #   CERT_KEY_TYPE=ec-256         证书密钥类型（ec-256 / ec-384 / rsa2048 / rsa4096）
 #   CERT_DNS_PROVIDER=cloudflare 用 dns-01 签发（域名不必指向本机；另配 CF_DNS_API_TOKEN 等）
+#   SKIP_DNS_CHECK=1             跳过安装前的 DNS 预检（默认：域名必须已解析到本机，否则提示并退出）
 ############################################
 API_HOST="${1:-}"
 API_KEY="${2:-}"
@@ -126,6 +127,73 @@ domain_points_here() {
   [[ -z "$ip" ]] && return 1
   local_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}')
   grep -qxF "$ip" <<<"$local_ips"
+}
+
+# 本机所有公网 IPv4（一行一个）
+local_ipv4_addrs() {
+  ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | sort -u
+}
+
+############################################
+# DNS 预检：证书域名必须解析到本机
+#   不通过 -> 打印诊断并退出（不做任何更改）
+#   跳过条件：SKIP_DNS_CHECK=1，或"显式 ListenIP + dns-01 签发"（域名本就不必指向本机）
+############################################
+dns_preflight() {
+  local dom resolved ip hit local_ips bad=0 others
+  local_ips=$(local_ipv4_addrs)
+
+  echo ""
+  echo "==== DNS 预检（证书域名需要解析到本机）===="
+  echo "  本机 IPv4: $(tr '\n' ' ' <<<"$local_ips")"
+
+  for dom in "$@"; do
+    [[ -z "$dom" || "$dom" == *.selfsigned.local ]] && continue
+    resolved=$(getent ahostsv4 "$dom" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+    hit=""
+    for ip in $resolved; do
+      grep -qxF "$ip" <<<"$local_ips" && { hit="$ip"; break; }
+    done
+    if [[ -z "${resolved// /}" ]]; then
+      echo "  ✗ $dom: 没有 A 记录（DNS 未配置或尚未生效）"
+      bad=1
+    elif [[ -n "$hit" ]]; then
+      others=""
+      for ip in $resolved; do [[ "$ip" != "$hit" ]] && others+="$ip "; done
+      if [[ -n "$others" ]]; then
+        echo "  ✓ $dom: $resolved（命中本机 $hit；⚠ 另有 $others 不指向本机，http-01 可能随机打到那边失败）"
+      else
+        echo "  ✓ $dom: $resolved（命中本机）"
+      fi
+    else
+      echo "  ✗ $dom: 解析到 $resolved，不在本机"
+      bad=1
+    fi
+  done
+
+  if [[ $bad -eq 0 ]]; then
+    echo "  预检通过"
+    return 0
+  fi
+
+  if [[ "${SKIP_DNS_CHECK:-}" == "1" ]]; then
+    echo ""
+    echo "  [跳过] SKIP_DNS_CHECK=1：继续安装。未解析到本机的节点会在启动时被单独跳过并告警。"
+    return 0
+  fi
+
+  echo ""
+  echo "  ── DNS 预检未通过，已退出（未做任何更改）──"
+  echo "  处理办法（任选其一）："
+  echo "    1) 去 DNS 服务商把上面的域名 A 记录改成本机 IP，等生效后重跑本脚本"
+  echo "       （域名在 Cloudflare 且开了代理小云朵时，源站 IP 会被隐藏：http-01 通常仍可用，"
+  echo "        确认无误可加 SKIP_DNS_CHECK=1 跳过本检查）"
+  echo "    2) 域名本来就不指向本机（跨机 / 走中转 / 只想先装起来）："
+  echo "       用 dns-01 签发并显式指定监听地址，例如"
+  echo "       CERT_DNS_PROVIDER=cloudflare CF_DNS_API_TOKEN=xxx LISTEN=0.0.0.0 bash <本脚本> ..."
+  echo "    3) 现在就要装、DNS 稍后再配：加 SKIP_DNS_CHECK=1 重跑（那个节点会被跳过，配好 DNS 重启即可）"
+  echo ""
+  exit 1
 }
 
 # 本机是否有公网 IPv6
@@ -327,6 +395,18 @@ CERT_MODE="http"
 if [[ "$USE_SELF_SIGNED" == "true" ]]; then
   CERT_MODE="self"
   [[ -z "$CERT_DNS_PROVIDER" ]] && CERT_DNS_PROVIDER=""
+fi
+
+############################################
+# DNS 预检：安装前把域名问题拦下来（不做任何更改）
+#   自签模式不需要；显式 ListenIP + dns-01 时域名本就不必指向本机
+############################################
+if [[ "$USE_SELF_SIGNED" == "true" ]]; then
+  echo "自签证书模式：跳过 DNS 预检（不使用证书域名）。"
+elif [[ -n "$LISTEN_OPT" && -n "$CERT_DNS_PROVIDER" ]]; then
+  echo "已配置 dns-01（$CERT_DNS_PROVIDER）+ 显式 ListenIP=$LISTEN_OPT：域名无需指向本机，跳过 DNS 预检。"
+else
+  dns_preflight "${DOMAINS[@]}"
 fi
 
 ############################################
