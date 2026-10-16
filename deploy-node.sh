@@ -3,24 +3,30 @@
 # V2bX AnyTLS 节点部署（soga 风格：一条命令 + $1/$2 注入，支持多节点一次装完）
 #
 #   bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) \
-#        <NodeID列表> <域名列表> [ApiHost] [ApiKey]
+#        <NodeID列表> <域名列表> [ApiHost] [ApiKey] [云控地址] [云控Token] [insecure]
 #
 #   例（3 个节点一次装完）：
 #     bash deploy-node.sh 37,38,39 \
 #          hytron1.wukong.us.kg,hytron2.wukong.us.kg,hytron3.wukong.us.kg \
 #          https://72v.net wukongs
 #
+#   例（节点 + 云控一条命令装完）：
+#     bash deploy-node.sh 37,38,39 hytron1,hytron2,hytron3 https://72v.net wukongs \
+#          https://token.mx.mk:8765 <云控Token>
+#
 #     · NodeID 支持逗号或点号分隔：37,38,39 / 37.38.39
 #     · 节点数量由 $1 自动判定，域名按顺序一一对应（数量必须一致）
 #     · 域名可只写前缀（hytron1）→ 自动拼 DOMAIN_SUFFIX（默认 stpikit.com）
 #     · ApiKey 给一个 = 全部共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应
+#     · 云控地址/Token 给了就顺带接入云控（已接入过的机器幂等复用身份，不产生重复记录）
 #
 #   行为：
 #     · 机器上还没有 V2bX → 调标准安装脚本一次装完（含 WARP 分流/系统调优/systemd）
 #     · 已经在跑      → 只追加/更新这些节点，域名自动并入机器级证书
 #                       （一张证书覆盖全机所有域名，只由第一个节点签发与续期）
-#     · 地址默认全自动：ListenIP=auto（按该节点域名的 A 记录）、SendIP=auto（同进同出）、
-#       ListenIP6=auto（本机空闲公网 v6，按节点固定）
+#     · 地址默认全自动（仅新节点）：ListenIP=auto（按该节点域名的 A 记录）、
+#       SendIP=auto（同进同出）、ListenIP6=auto（本机空闲公网 v6，按节点固定）；
+#       存量节点上已经钉死的地址会原样保留（除非显式传 LISTEN/LISTEN6/SEND 覆盖）
 #
 # 环境变量（都可省）：
 #   API_HOST / API_KEY       面板地址与密钥（缺省则交互询问）
@@ -28,7 +34,8 @@
 #   LISTEN / LISTEN6 / SEND  覆盖地址（默认 auto；SEND 可写 0 表示不绑定）
 #   CERT_KEY_TYPE            证书密钥类型，默认 ec-256
 #   WARP_MODE                on/off（仅首次安装时生效，默认 on）
-#   CLOUD_URL / CLOUD_TOKEN  顺带接入云控中心（仅首次安装时生效）
+#   CLOUD_URL / CLOUD_TOKEN  云控中心地址与 Token（也可用 $5/$6 传入）
+#   CLOUD_INSECURE=1         云控为自签 HTTPS 时强制免证书校验（一般无需，自动探测）
 #   SKIP_DNS_CHECK            跳过安装前 DNS 预检（默认：域名必须解析到本机，否则提示并退出）
 ############################################
 
@@ -43,21 +50,27 @@ DOMAINS_IN="${2:-}"
 API_HOST="${3:-${API_HOST:-}}"
 API_KEY="${4:-${API_KEY:-}}"
 DOMAIN_SUFFIX="${DOMAIN_SUFFIX:-stpikit.com}"
+# 显式传了地址就用传的；没传时，存量节点上已有的固化值会被保留（重跑不会把钉死的地址改掉）
+LISTEN_GIVEN=false;  [[ -n "${LISTEN:-}"  ]] && LISTEN_GIVEN=true
+LISTEN6_GIVEN=false; [[ -n "${LISTEN6:-}" ]] && LISTEN6_GIVEN=true
+SEND_GIVEN=false;    [[ -n "${SEND:-}"    ]] && SEND_GIVEN=true
 LISTEN="${LISTEN:-auto}"
 LISTEN6="${LISTEN6:-auto}"
 SEND="${SEND:-auto}"
 CERT_KEY_TYPE="${CERT_KEY_TYPE:-ec-256}"
 WARP_MODE="${WARP_MODE:-on}"
-CLOUD_URL="${CLOUD_URL:-}"
-CLOUD_TOKEN="${CLOUD_TOKEN:-}"
+CLOUD_URL="${5:-${CLOUD_URL:-}}"
+CLOUD_TOKEN="${6:-${CLOUD_TOKEN:-}}"
+CLOUD_INSECURE="${7:-${CLOUD_INSECURE:-}}"
 
 CONFIG_JSON="/etc/V2bX/config.json"
 BIN="/usr/local/V2bX/V2bX"
 REPO_RAW="https://raw.githubusercontent.com/4kercc/V2BX-malio/main"
 
 usage() {
-  echo "用法: bash deploy-node.sh <NodeID列表> <域名列表> [ApiHost] [ApiKey]"
-  echo "  例:  bash deploy-node.sh 37,38,39 a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg https://72v.net <密钥>"
+  echo "用法: bash deploy-node.sh <NodeID列表> <域名列表> [ApiHost] [ApiKey] [云控地址] [云控Token] [insecure]"
+  echo "  例:  bash deploy-node.sh 37,38,39 a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg https://72v.net <面板密钥>"
+  echo "       bash deploy-node.sh 37,38,39 a,b,c https://72v.net <面板密钥> https://token.mx.mk:8765 <云控Token>   # 节点+云控一起装"
   echo "       bash deploy-node.sh 37 hytron1-1                  # 单节点，只写前缀（拼 DOMAIN_SUFFIX）"
   exit 1
 }
@@ -182,14 +195,21 @@ if [[ ! -f "$CONFIG_JSON" || ! -x "$BIN" ]]; then
   echo "本机未安装 V2bX，先走标准安装（含 WARP 分流 / 系统调优 / systemd 服务）..."
   NODE_IDS=$(printf '%s,' "${IDS[@]}"); NODE_IDS="${NODE_IDS%,}"
   DOMAINS_ENV=$(printf '%s,' "${FULL_DOMAINS[@]}"); DOMAINS_ENV="${DOMAINS_ENV%,}"
-  # 位置参数：1 ApiHost、2 ApiKey、3/4 留空（多节点模式走 NODE_IDS/DOMAINS 环境变量）、5 WARP、6/7 云控
+  # 位置参数：1 ApiHost、2 ApiKey、3/4 留空（多节点模式走 NODE_IDS/DOMAINS 环境变量）、5 WARP、6/7/8 云控
   INST_ARGS=("$API_HOST" "$API_KEY" "" "" "$WARP_MODE")
-  [[ -n "$CLOUD_URL"   ]] && INST_ARGS+=("$CLOUD_URL")
-  [[ -n "$CLOUD_TOKEN" ]] && INST_ARGS+=("$CLOUD_TOKEN")
+  if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
+    INST_ARGS+=("$CLOUD_URL" "$CLOUD_TOKEN" "$CLOUD_INSECURE")
+  fi
   NODE_IDS="$NODE_IDS" DOMAINS="$DOMAINS_ENV" LISTEN="$LISTEN" LISTEN6="$LISTEN6" SEND="$SEND" \
     CERT_KEY_TYPE="$CERT_KEY_TYPE" SKIP_DNS_CHECK=1 \
     bash <(curl -Ls "${REPO_RAW}/install_v2bx_anytls.sh") "${INST_ARGS[@]}"
   echo -e "${green}✓ 安装完成，$COUNT 个节点已启动${plain}"
+  if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
+    echo -e "${green}✓ 云控也已接入：$CLOUD_URL（后台刷新即可看到本机）${plain}"
+    echo -e "${yellow}  若上面云控那步报错，可单独重跑：bash <(curl -fsSL ${REPO_RAW}/cloud-join.sh) \"$CLOUD_URL\" \"$CLOUD_TOKEN\"${plain}"
+  else
+    echo -e "${yellow}提示：需要接云控可加参数：... <面板密钥> https://云控地址 <云控Token>${plain}"
+  fi
   exit 0
 fi
 
@@ -229,10 +249,32 @@ else
 fi
 
 UPDATED="$CONFIG_JSON"
+KEPT=()
 for i in "${!IDS[@]}"; do
+  # 该节点已有配置里的地址（重跑保留判断：没显式传就沿用原值，新节点才用 auto）
+  # 注意：逐个取值，不能用 IFS 切分——空字段会被 IFS 空白折叠，导致字段错位
+  CUR_LISTEN=$(jq -r --argjson nid "${IDS[$i]}" '(.Nodes // [] | map(select(.NodeID == $nid)) | .[0] // {}) | .ListenIP // ""' "$UPDATED")
+  CUR_LISTEN6=$(jq -r --argjson nid "${IDS[$i]}" '(.Nodes // [] | map(select(.NodeID == $nid)) | .[0] // {}) | .ListenIP6 // ""' "$UPDATED")
+  CUR_SEND=$(jq -r --argjson nid "${IDS[$i]}" '(.Nodes // [] | map(select(.NodeID == $nid)) | .[0] // {}) | .SendIP // ""' "$UPDATED")
+  LISTEN_EFF="$LISTEN"
+  if [[ "$LISTEN_GIVEN" == "false" && -n "$CUR_LISTEN" ]]; then
+    LISTEN_EFF="$CUR_LISTEN"
+    [[ "$LISTEN_EFF" == "$LISTEN" ]] || KEPT+=("NodeID ${IDS[$i]}: ListenIP 保留 $LISTEN_EFF")
+  fi
+  LISTEN6_EFF="$LISTEN6_VALUE"
+  if [[ "$LISTEN6_GIVEN" == "false" && -n "$CUR_LISTEN6" ]]; then
+    LISTEN6_EFF="$CUR_LISTEN6"
+    [[ "$LISTEN6_EFF" == "$LISTEN6_VALUE" ]] || KEPT+=("NodeID ${IDS[$i]}: ListenIP6 保留 $LISTEN6_EFF")
+  fi
+  SEND_EFF="$SEND"
+  if [[ "$SEND_GIVEN" == "false" && -n "$CUR_SEND" ]]; then
+    SEND_EFF="$CUR_SEND"
+    [[ "$SEND_EFF" == "$SEND" ]] || KEPT+=("NodeID ${IDS[$i]}: SendIP 保留 $SEND_EFF")
+  fi
+
   NODE_JSON=$(jq -nc \
     --arg host "$API_HOST" --arg key "${KEYS[$i]}" --argjson nid "${IDS[$i]}" \
-    --arg dom "${FULL_DOMAINS[$i]}" --arg listen "$LISTEN" --arg listen6 "$LISTEN6_VALUE" --arg send "$SEND" \
+    --arg dom "${FULL_DOMAINS[$i]}" --arg listen "$LISTEN_EFF" --arg listen6 "$LISTEN6_EFF" --arg send "$SEND_EFF" \
     '{Core:"sing", ApiHost:$host, ApiKey:$key, NodeID:$nid, NodeType:"anytls", Timeout:30,
       ListenIP:$listen, SendIP:$send, DeviceOnlineMinTraffic:200, MinReportTraffic:0,
       TCPFastOpen:false, SniffEnabled:true,
@@ -262,6 +304,10 @@ done
 jq -e . "$UPDATED" >/dev/null || { echo -e "${red}生成的新配置不是合法 JSON，已保留原配置不动${plain}"; exit 1; }
 
 echo ""
+if [[ ${#KEPT[@]} -gt 0 ]]; then
+  echo "==== 沿用原有地址（想改就显式传 LISTEN= / LISTEN6= / SEND= 重跑） ===="
+  printf '  %s\n' "${KEPT[@]}"
+fi
 echo "==== 配置结果 ===="
 jq -c '{Cert, Nodes: [.Nodes[] | {NodeID, ListenIP, ListenIP6, SendIP, CertDomain: .CertConfig.CertDomain}]}' "$UPDATED"
 
@@ -285,6 +331,32 @@ else
   exit 1
 fi
 
+############################################
+# 顺带接入云控（$5/$6 或 CLOUD_URL/CLOUD_TOKEN；已接入过的机器幂等复用身份）
+#   委托 cloud-join.sh：只写 cloud.conf + agent + 守护，绝不碰节点配置
+############################################
+CLOUD_JOINED=false
+if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
+  echo ""
+  echo "==== 接入云控中心: $CLOUD_URL ===="
+  if [[ -f /etc/V2bX/cloud.conf ]]; then
+    CUR_CLOUD=$(grep -oP '^CLOUD_URL="\K[^"]+' /etc/V2bX/cloud.conf 2>/dev/null | head -1)
+    [[ -n "$CUR_CLOUD" && "$CUR_CLOUD" != "$CLOUD_URL" ]] && \
+      echo -e "${yellow}  注意：本机原来接的是 $CUR_CLOUD，本次改成 $CLOUD_URL${plain}"
+  fi
+  CLOUD_JOIN_TMP=$(mktemp /tmp/cloud-join.XXXXXX.sh)
+  if curl -fsSL -o "$CLOUD_JOIN_TMP" "${REPO_RAW}/cloud-join.sh"; then
+    if bash "$CLOUD_JOIN_TMP" "$CLOUD_URL" "$CLOUD_TOKEN" "" "$CLOUD_INSECURE"; then
+      CLOUD_JOINED=true
+    else
+      echo -e "${yellow}⚠ 云控接入未完成（节点已更新完成，可稍后单独重跑 cloud-join.sh）${plain}"
+    fi
+  else
+    echo -e "${yellow}⚠ cloud-join.sh 下载失败，云控接入跳过（节点已更新完成）${plain}"
+  fi
+  rm -f "$CLOUD_JOIN_TMP"
+fi
+
 echo ""
 echo "==== 关键日志 ===="
 journalctl -u V2bX --since "-40s" --no-pager | grep -aE "ListenIP=auto|ListenIP6=auto|SendIP=auto|Machine certificate|acme:|Node started|tcp server started" | tail -12 || true
@@ -297,3 +369,10 @@ if [[ -n "$LISTEN6_VALUE" ]]; then
   journalctl -u V2bX --since "-2min" --no-pager | grep -a "ListenIP6=auto ->" | tail -"$COUNT" | sed 's/^.*Node /     /' || true
 fi
 echo "  3) 面板里这些节点的 server 填对应域名，端口 443（节点类型 anytls）"
+if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
+  if [[ "$CLOUD_JOINED" == "true" ]]; then
+    echo "  4) 云控后台 $CLOUD_URL 刷新即可看到本机（表格里带云控名称与面板/节点ID）"
+  else
+    echo "  4) 云控未接入成功，稍后重跑: bash <(curl -fsSL ${REPO_RAW}/cloud-join.sh) \"$CLOUD_URL\" \"$CLOUD_TOKEN\""
+  fi
+fi

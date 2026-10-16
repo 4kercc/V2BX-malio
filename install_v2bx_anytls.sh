@@ -846,31 +846,33 @@ EOF
 systemctl daemon-reload
 
 ############################################
-# 云控 Agent（可选：传入第6/7参数自动接入云端）
-############################################
-if [[ -n "$CLOUD_URL" && -n "$CLOUD_TOKEN" ]]; then
-  echo "==== 接入云控中心: $CLOUD_URL ===="
-  CLOUD_INSECURE_LINE=""
-  [[ "$CLOUD_INSECURE" =~ ^(insecure|selfsign|-k|1)$ ]] && CLOUD_INSECURE_LINE='CLOUD_INSECURE="1"'
-  cat > /etc/V2bX/cloud.conf <<EOF
-CLOUD_URL="${CLOUD_URL}"
-CLOUD_TOKEN="${CLOUD_TOKEN}"
-NODE_NAME="${NODE_NAME:-node${NODE_IDS[0]}-$(hostname -s 2>/dev/null || hostname)}"
-${CLOUD_INSECURE_LINE}
-EOF
-  curl -fsSL -o /usr/local/V2bX/cloud-agent.sh \
-    https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-agent.sh && \
-    chmod +x /usr/local/V2bX/cloud-agent.sh
-  (crontab -l 2>/dev/null | grep -v "cloud-agent.sh"; echo "*/2 * * * * /usr/local/V2bX/cloud-agent.sh >/dev/null 2>&1") | crontab - || true
-  echo "✓ 云控 Agent 已安装（每 2 分钟心跳上报+配置拉取）"
-fi
-
-############################################
 # restart
 ############################################
 systemctl restart V2bX || true
 
 v2bx log
+
+############################################
+# 云控 Agent（可选：传入第6/7参数自动接入云端）
+#   统一委托 cloud-join.sh，保证「全新安装」和「存量机器 cloud-join」走同一条路径：
+#     · 按本机 IP 复用云控上已有身份（避免同机产生重复节点记录）
+#     · 自签 HTTPS 自动探测（不必手写 insecure）
+#     · 长轮询守护（命令秒级送达）+ 幂等 cron 兜底
+############################################
+join_cloud() {
+  if [[ -z "$CLOUD_URL" || -z "$CLOUD_TOKEN" ]]; then return 0; fi
+  echo "==== 接入云控中心: $CLOUD_URL ===="
+  local tmp
+  tmp=$(mktemp /tmp/cloud-join.XXXXXX.sh)
+  if ! curl -fsSL -o "$tmp" https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh; then
+    echo "⚠ cloud-join.sh 下载失败，跳过云控接入（节点本身已装好，可稍后单独跑 cloud-join.sh）"
+    rm -f "$tmp"; return 0
+  fi
+  bash "$tmp" "$CLOUD_URL" "$CLOUD_TOKEN" "" "$CLOUD_INSECURE" || \
+    echo "⚠ 云控接入未完成，可稍后重跑: bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/cloud-join.sh) \"$CLOUD_URL\" \"$CLOUD_TOKEN\""
+  rm -f "$tmp"
+}
+join_cloud
 
 echo "==== INSTALL DONE ===="
 echo "节点数: $NODE_COUNT"

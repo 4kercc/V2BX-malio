@@ -36,6 +36,20 @@ node cloud-server.js          # 首次运行自动生成 cloud-data.json
 
 ## 二、节点接入（安装时传第 6/7 参数）
 
+推荐：**节点与云控一条命令装完**（第 5/6 个参数 = 云控地址 / Token，第 7 个可选 `insecure`）：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) \
+     37,38,39 \
+     hytron1.wukong.us.kg,hytron2.wukong.us.kg,hytron3.wukong.us.kg \
+     https://72v.net <面板密钥> \
+     https://云控中心地址 <云控Token>
+```
+
+机器上还没有 V2bX 就一次装完整机再接入云控；已经有 V2bX 就在更新这些节点之后接入（原来接的是别的云控会提示一句）。重复接入是**幂等**的：按本机 IP 复用云控上已有身份，不会产生重复节点。
+
+单节点安装脚本（位置参数 6/7/8 = 云控地址 / Token / insecure）：
+
 ```bash
 bash install_v2bx_anytls.sh "https://面板" "密钥" "节点ID" "域名或null" on "https://云控中心地址" "云控Token"
 ```

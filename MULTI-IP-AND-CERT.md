@@ -155,8 +155,20 @@ bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-
 - 域名可只写前缀（`hytron1`）→ 自动拼 `DOMAIN_SUFFIX`（默认 `stpikit.com`）；
 - `ApiKey` 给**一个** = 全部节点共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应；
 - 机器上没有 V2bX → 调标准安装脚本**一次装完整机**（WARP 分流 / 系统调优 / systemd / 新式配置）；已经装过 → 只追加/更新这些节点（保留手工加的自定义 `Name` 与 `LimitConfig`，证书字段统一改成继承机器证书）；
-- 地址默认全自动：`ListenIP=auto`（按各节点自己域名的 A 记录；**未解析到本机的节点会被单独跳过并告警，不影响同机其它节点**）、`SendIP=auto`（同进同出）、`ListenIP6=auto`（本机空闲公网 v6，按节点固定分配）；
+- 地址默认全自动（**只对新节点**）：`ListenIP=auto`（按各节点自己域名的 A 记录；**未解析到本机的节点会被单独跳过并告警，不影响同机其它节点**）、`SendIP=auto`（同进同出）、`ListenIP6=auto`（本机空闲公网 v6，按节点固定分配）；**存量节点上已经钉死的地址原样保留**（`.58` 上两个节点显式写的 v6 地址重跑后不变），想改就显式传 `LISTEN=` / `LISTEN6=` / `SEND=` 覆盖；
 - 已安装时脚本先查二进制版本：低于 v1.3.0 会拦住并提示升级（老二进制不支持 `auto`）。
+
+要**连云控一起装**，把云控地址与 Token 接在后面（第 5/6 个参数，第 7 个可选 `insecure`）：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) \
+     37,38,39 \
+     hytron1.wukong.us.kg,hytron2.wukong.us.kg,hytron3.wukong.us.kg \
+     https://72v.net wukongs \
+     https://token.mx.mk:8765 <云控Token>
+```
+
+两个分支都会接云控，且都委托 `cloud-join.sh`：**首次安装**在装完节点并重启后接入；**机器上已有 V2bX**则在更新节点之后接入（原来接的是别的云控会提示一句）。重复接入是幂等的——按本机 IP 查云控已有记录并**复用身份**，不会产生重复节点；接入失败只告警，不影响已更新的节点。
 
 只加/改一个节点也用同一条命令：`bash deploy-node.sh 38 hytron1-1`。
 
@@ -167,7 +179,7 @@ NODE_IDS="37,38,39" DOMAINS="a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg" \
   bash <(curl -Ls .../install_v2bx_anytls.sh) https://72v.net wukongs
 ```
 
-可选环境变量：`LISTEN` / `LISTEN6` / `SEND`（默认全是 `auto`）、`CERT_KEY_TYPE`（默认 `ec-256`）、`WARP_MODE`（默认 on，仅首次安装）、`CLOUD_URL` / `CLOUD_TOKEN`（顺带接入云控，仅首次安装）。
+可选环境变量：`LISTEN` / `LISTEN6` / `SEND`（默认全是 `auto`）、`CERT_KEY_TYPE`（默认 `ec-256`）、`WARP_MODE`（默认 on，仅首次安装）、`CLOUD_URL` / `CLOUD_TOKEN` / `CLOUD_INSECURE`（顺带接入云控，等价于 `deploy-node.sh` 的第 5/6/7 参数）。
 
 ### 6.2 标准安装脚本（install_v2bx_anytls.sh）的字段
 
@@ -178,7 +190,7 @@ NODE_IDS="37,38,39" DOMAINS="a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg" \
 | 参数 3 | NODE_ID | 面板里的节点 ID |
 | 参数 4 | DOMAIN | 证书域名（`hytron1.wukong.us.kg`）；写 `null` = 自签 |
 | 参数 5 | WARP_MODE | `on`/`off`，默认 on |
-| 参数 6/7/8 | 云控 URL / Token / insecure | 可选，接入云控中心 |
+| 参数 6/7/8 | 云控 URL / Token / insecure | 可选；节点装好并重启后自动委托 `cloud-join.sh` 接入（幂等、按 IP 复用身份） |
 | 交互询问 | 节点数量 / NodeID / 域名 / ListenIP / ListenIP6 / SendIP | 见下表 |
 
 | 交互字段 | 推荐填法 | 说明 |
