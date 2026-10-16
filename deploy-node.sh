@@ -102,6 +102,16 @@ fi
 ############################################
 # 已安装：追加/更新这一个节点（幂等，按 NodeID 匹配）
 ############################################
+############################################
+# 已安装：先确认二进制支持新写法（auto 地址 / 机器级证书需要 v1.3.0+）
+############################################
+CUR_VER=$("$BIN" version 2>/dev/null | grep -aoE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [[ -n "$CUR_VER" ]] && [[ "$(printf '%s\nv1.3.0\n' "$CUR_VER" | sort -V | head -1)" != "v1.3.0" ]]; then
+  echo -e "${red}当前 V2bX 是 $CUR_VER，不支持 ListenIP/SendIP/ListenIP6 = auto 与机器级证书。${plain}"
+  echo -e "${yellow}请先升级：bash <(curl -fsSL https://raw.githubusercontent.com/4kercc/V2BX-malio/main/update-v2bx.sh)${plain}"
+  echo -e "${yellow}（或 v2bx update v1.3.0），然后重新运行本脚本。${plain}"
+  exit 1
+fi
 command -v jq >/dev/null || { echo "安装 jq..."; (apt install -y jq || yum install -y jq) >/dev/null 2>&1; }
 
 LISTEN6_VALUE="$LISTEN6"
