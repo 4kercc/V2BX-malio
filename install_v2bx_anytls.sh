@@ -290,18 +290,26 @@ local_ipv4_addrs() {
   ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | sort -u
 }
 
+# 本机所有公网 IPv6（一行一个，排除链路本地）
+local_ipv6_addrs() {
+  ip -6 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | grep -vi '^fe80' | sort -u
+}
+
 ############################################
 # DNS 预检：证书域名必须解析到本机
-#   不通过 -> 打印诊断并退出（不做任何更改）
-#   跳过条件：SKIP_DNS_CHECK=1，或"显式 ListenIP + dns-01 签发"（域名本就不必指向本机）
+#   · 没有 A 记录、但 AAAA 指向本机公网 v6 = 纯 v6 域名（强制 v6 入口）→ 放行并提示
+#   · 不通过 -> 打印诊断并退出（不做任何更改）
+#   · 跳过条件：SKIP_DNS_CHECK=1，或"显式 ListenIP + dns-01 签发"（域名本就不必指向本机）
 ############################################
 dns_preflight() {
-  local dom resolved ip hit local_ips bad=0 others
+  local dom resolved ip hit local_ips local_v6s bad=0 others v6resolved v6hit
   local_ips=$(local_ipv4_addrs)
+  local_v6s=$(local_ipv6_addrs)
 
   echo ""
   echo "==== DNS 预检（证书域名需要解析到本机）===="
   echo "  本机 IPv4: $(tr '\n' ' ' <<<"$local_ips")"
+  [[ -n "$local_v6s" ]] && echo "  本机 IPv6: $(tr '\n' ' ' <<<"$local_v6s")"
 
   for dom in "$@"; do
     [[ -z "$dom" || "$dom" == *.selfsigned.local ]] && continue
@@ -311,8 +319,18 @@ dns_preflight() {
       grep -qxF "$ip" <<<"$local_ips" && { hit="$ip"; break; }
     done
     if [[ -z "${resolved// /}" ]]; then
-      echo "  ✗ $dom: 没有 A 记录（DNS 未配置或尚未生效）"
-      bad=1
+      # 没有 A 记录：允许「纯 v6 域名」——AAAA 指向本机公网 v6（强制 v6 入口的节点）
+      v6resolved=$(getent ahostsv6 "$dom" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
+      v6hit=""
+      for ip in $v6resolved; do
+        grep -qxF "$ip" <<<"$local_v6s" && { v6hit="$ip"; break; }
+      done
+      if [[ -n "$v6hit" ]]; then
+        echo "  ✓ $dom: 纯 v6 域名（AAAA 命中本机 $v6hit）——注意：该节点 ListenIP 必须显式给（如 127.0.0.1），ListenIP6 用 auto 或 $v6hit"
+      else
+        echo "  ✗ $dom: 没有 A 记录，AAAA ${v6resolved:-也没有} 也不在本机（DNS 未配置或尚未生效）"
+        bad=1
+      fi
     elif [[ -n "$hit" ]]; then
       others=""
       for ip in $resolved; do [[ "$ip" != "$hit" ]] && others+="$ip "; done
