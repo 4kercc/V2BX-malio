@@ -17,6 +17,11 @@
 #     · NodeID 支持逗号或点号分隔：37,38,39 / 37.38.39
 #     · 节点数量由 $1 自动判定，域名按顺序一一对应（数量必须一致）
 #     · 域名可只写前缀（hytron1）→ 自动拼 DOMAIN_SUFFIX（默认 stpikit.com）
+#     · 域名写 null / auto / panel → 安装时直接问面板要该节点的域名（heki 风格，免手填）：
+#         多节点可以整列只写一个 null，各节点各自去要自己的域名；
+#         面板里没配域名（server 是 IP）或密钥/NodeID 不对 → 打印原因并从本次部署剔除，
+#         只剩一个都不成功则直接退出（不做任何更改）。面板里该节点的域名必须已解析到本机。
+#     · 域名写 self / selfsigned → 自签证书（不申请 ACME）
 #     · ApiKey 给一个 = 全部共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应
 #     · 云控地址/Token 给了就顺带接入云控（已接入过的机器幂等复用身份，不产生重复记录）
 #
@@ -73,7 +78,10 @@ REPO_RAW="https://raw.githubusercontent.com/4kercc/V2BX-malio/main"
 usage() {
   echo "用法: bash deploy-node.sh <NodeID列表> <域名列表> [ApiHost] [ApiKey] [云控地址] [云控Token] [insecure]"
   echo "  例:  bash deploy-node.sh 37,38,39 a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg https://72v.net <面板密钥>"
+  echo "       bash deploy-node.sh 28 null https://w.gpfggtech.xyz <面板密钥>   # 域名从面板取（免手填，heki 风格）"
+  echo "       bash deploy-node.sh 27,28 null https://w.gpfggtech.xyz <面板密钥> # 多节点：各取自己的域名"
   echo "       bash deploy-node.sh 37,38,39 a,b,c https://72v.net <面板密钥> https://token.mx.mk:8765 <云控Token>   # 节点+云控一起装"
+  echo "       bash deploy-node.sh 37 self https://72v.net <面板密钥>            # 自签证书（无域名时）"
   echo "       bash deploy-node.sh 37 hytron1-1                  # 单节点，只写前缀（拼 DOMAIN_SUFFIX）"
   exit 1
 }
@@ -83,11 +91,78 @@ usage() {
 # 列表切分：NodeID 支持 , . 空格；域名按 , 或空格（域名本身含点号）
 split_list() { printf '%s' "$1" | tr "$2" '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$'; }
 
+############################################
+# 面板取域名（heki 风格）：域名写 null / auto / panel 时，安装时直接问面板要该节点的域名
+#   SSPanel : GET {ApiHost}/mod_mu/nodes/{NodeID}/info?key={ApiKey}  → data.server
+#   V2board : GET {ApiHost}/api/v1/server/UniProxy/config?node_id={ID}&node_type=anytls&token={Key} → server
+#   两种面板的 server 都形如 "jp.gpfggtech.xyz;port=443&server_name=..."，取分号前那段
+############################################
+PANEL_MARK="__PANEL__"
+PANEL_FETCH_ERR=""
+
+ensure_jq() {
+  command -v jq >/dev/null 2>&1 && return 0
+  echo "安装 jq（取面板域名需要）..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y jq >/dev/null 2>&1 || { apt-get update -y >/dev/null 2>&1; apt-get install -y jq >/dev/null 2>&1; }
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y jq >/dev/null 2>&1
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y jq >/dev/null 2>&1
+  fi
+  command -v jq >/dev/null 2>&1
+}
+
+is_panel_marker() { case "${1,,}" in null|auto|panel) return 0 ;; *) return 1 ;; esac; }
+is_self_marker()  { case "${1,,}" in self|selfsigned|none) return 0 ;; *) return 1 ;; esac; }
+
+# 结果通过全局变量回传（不能用 $( ) 调用：命令替换会开子 shell，失败原因传不出来）
+PANEL_FETCH_DOMAIN=""
+PANEL_FETCH_ERR=""
+
+# $1=ApiHost $2=ApiKey $3=NodeID；成功：PANEL_FETCH_DOMAIN=域名 且 return 0
+panel_fetch_domain() {
+  local host key nid resp raw dom attempt
+  host="${1%/}"; key="$2"; nid="$3"
+  PANEL_FETCH_DOMAIN=""; PANEL_FETCH_ERR=""
+  ensure_jq || { PANEL_FETCH_ERR="本机没有 jq 且自动安装失败"; return 1; }
+  for attempt in 1 2; do
+    resp=$(curl -s --max-time 20 "${host}/mod_mu/nodes/${nid}/info?key=${key}" 2>/dev/null)
+    raw=$(printf '%s' "$resp" | jq -r 'if ((.ret // 0) == 1) then ((.data.server // "") | tostring) else "" end' 2>/dev/null)
+    [[ -z "$raw" ]] && {
+      resp=$(curl -s --max-time 20 "${host}/api/v1/server/UniProxy/config?node_id=${nid}&node_type=anytls&token=${key}" 2>/dev/null)
+      raw=$(printf '%s' "$resp" | jq -r '(.server // "") | tostring' 2>/dev/null)
+    }
+    [[ -n "$raw" ]] && break
+  done
+  if [[ -z "$raw" ]]; then
+    PANEL_FETCH_ERR="面板没返回 server（SSPanel ret≠1、UniProxy 也不可用）：检查密钥 / NodeID / 节点是否启用 / 面板是否可达"
+    return 1
+  fi
+  dom="${raw%%;*}"
+  dom="$(printf '%s' "$dom" | tr -d '[:space:]')"
+  dom="${dom#[}"; dom="${dom%]}"
+  [[ "$dom" == *:* ]] && dom="${dom%%:*}"
+  if [[ "$dom" == *:* || "$dom" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ \
+        || ! "$dom" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ || "$dom" != *.* ]]; then
+    PANEL_FETCH_ERR="面板返回的不是可签发域名：$raw（证书只能签域名，请先在面板把该节点的域名配好）"
+    return 1
+  fi
+  PANEL_FETCH_DOMAIN="$(printf '%s\n' "$dom" | tr 'A-Z' 'a-z')"
+  return 0
+}
+
 declare -a IDS DOMAINS
 while IFS= read -r id; do IDS+=("$id"); done < <(split_list "$IDS_IN" ',. ')
 while IFS= read -r d; do DOMAINS+=("$d"); done < <(split_list "$DOMAINS_IN" ', ')
 
 COUNT=${#IDS[@]}
+# 域名只写一个 null / auto / panel = 所有节点都从面板取自己的域名
+if [[ ${#DOMAINS[@]} -eq 1 && $COUNT -gt 1 ]] && is_panel_marker "${DOMAINS[0]}"; then
+  one="${DOMAINS[0]}"
+  DOMAINS=()
+  for ((i=0; i<COUNT; i++)); do DOMAINS+=("$one"); done
+fi
 if [[ $COUNT -eq 0 || ${#DOMAINS[@]} -eq 0 ]]; then usage; fi
 if [[ ${#DOMAINS[@]} -ne $COUNT ]]; then
   echo -e "${red}节点数与域名数不一致：NodeID ${#IDS[@]} 个，域名 ${#DOMAINS[@]} 个${plain}"
@@ -96,25 +171,91 @@ if [[ ${#DOMAINS[@]} -ne $COUNT ]]; then
   exit 1
 fi
 
-# 校验并补全域名（写 null = 自签）
+# 校验并补全域名：null/auto/panel = 从面板取；self/selfsigned = 自签
 declare -a FULL_DOMAINS
 SELF_SIGNED=false
+PANEL_DOMAINS=0
+SELF_DOMAINS=0
 for i in "${!IDS[@]}"; do
   [[ "${IDS[$i]}" =~ ^[0-9]+$ ]] || { echo -e "${red}NodeID 不是数字: ${IDS[$i]}${plain}"; exit 1; }
   d="${DOMAINS[$i]}"
-  if [[ "$d" == "null" || "$d" == "NULL" ]]; then
-    SELF_SIGNED=true
+  if is_panel_marker "$d"; then
+    d="$PANEL_MARK"
+    PANEL_DOMAINS=$((PANEL_DOMAINS + 1))
+  elif is_self_marker "$d"; then
+    SELF_DOMAINS=$((SELF_DOMAINS + 1))
     d="node${IDS[$i]}.selfsigned.local"
   elif [[ "$d" != *.* ]]; then
     d="${d}.${DOMAIN_SUFFIX}"
   fi
-  [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { echo -e "${red}域名格式不对: $d${plain}"; exit 1; }
+  if [[ "$d" != "$PANEL_MARK" ]]; then
+    [[ "$d" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || { echo -e "${red}域名格式不对: $d${plain}"; exit 1; }
+  fi
   FULL_DOMAINS+=("$d")
 done
+if [[ $SELF_DOMAINS -gt 0 && $SELF_DOMAINS -lt $COUNT ]]; then
+  echo -e "${red}自签(self) 与域名不能混用：本机所有节点共用一张证书${plain}"; exit 1
+fi
+[[ $SELF_DOMAINS -gt 0 ]] && SELF_SIGNED=true
 
 if [[ -z "$API_HOST" ]]; then read -rp "ApiHost (面板地址，如 https://72v.net): " API_HOST; fi
 if [[ -z "$API_KEY"  ]]; then read -rp "ApiKey  (面板密钥；多个节点可用逗号按序给): " API_KEY; fi
 [[ -z "$API_HOST" || -z "$API_KEY" ]] && { echo -e "${red}缺少 ApiHost / ApiKey${plain}"; exit 1; }
+
+############################################
+# 从面板取域名并回填（域名写了 null/auto/panel 的节点）
+#   · 取不到的节点：打印原因后从本次部署里剔除（不写进配置，不动系统）
+#   · 全部取不到：直接退出，不做任何更改
+############################################
+if [[ $PANEL_DOMAINS -gt 0 ]]; then
+  echo ""
+  echo "==== 从面板取域名（$PANEL_DOMAINS 个节点）===="
+  declare -a FETCHED_OK=() FETCHED_BAD=()
+  for i in "${!IDS[@]}"; do
+    [[ "${FULL_DOMAINS[$i]}" == "$PANEL_MARK" ]] || continue
+    if panel_fetch_domain "$API_HOST" "$API_KEY" "${IDS[$i]}"; then
+      FULL_DOMAINS[$i]="$PANEL_FETCH_DOMAIN"
+      FETCHED_OK+=("$i")
+      echo -e "  ${green}✓${plain} NodeID ${IDS[$i]}: $PANEL_FETCH_DOMAIN"
+    else
+      FETCHED_BAD+=("$i")
+      echo -e "  ${red}✗${plain} NodeID ${IDS[$i]}: $PANEL_FETCH_ERR"
+    fi
+  done
+  if [[ ${#FETCHED_OK[@]} -eq 0 ]]; then
+    echo ""
+    echo -e "${red}── 面板没给出任何可签发域名，已退出（未做任何更改）──${plain}"
+    echo "  处理办法："
+    echo "    1) 去面板把该节点的服务器地址填成域名（不是 IP），确认密钥/NodeID 正确后重跑"
+    echo "    2) 暂时没有域名：域名位置写 self 用自签证书安装"
+    echo ""
+    exit 1
+  fi
+  if [[ ${#FETCHED_BAD[@]} -gt 0 ]]; then
+    # 剔除取不到域名的节点（连同它那一位的 ApiKey）
+    declare -a KEEP_IDS KEEP_DOMS
+    for i in "${!IDS[@]}"; do
+      skip=false
+      for b in "${FETCHED_BAD[@]}"; do [[ "$b" == "$i" ]] && skip=true; done
+      [[ "$skip" == "true" ]] && continue
+      KEEP_IDS+=("${IDS[$i]}"); KEEP_DOMS+=("${FULL_DOMAINS[$i]}")
+    done
+    if [[ "$API_KEY" == *","* ]]; then
+      declare -a ALL_KEYS KEEP_KEYS
+      while IFS= read -r k; do ALL_KEYS+=("$k"); done < <(split_list "$API_KEY" ', ')
+      for i in "${!IDS[@]}"; do
+        skip=false
+        for b in "${FETCHED_BAD[@]}"; do [[ "$b" == "$i" ]] && skip=true; done
+        [[ "$skip" == "true" ]] && continue
+        KEEP_KEYS+=("${ALL_KEYS[$i]}")
+      done
+      API_KEY=$(printf '%s,' "${KEEP_KEYS[@]}"); API_KEY="${API_KEY%,}"
+    fi
+    IDS=("${KEEP_IDS[@]}"); FULL_DOMAINS=("${KEEP_DOMS[@]}"); COUNT=${#IDS[@]}
+    echo -e "${yellow}  已剔除 ${#FETCHED_BAD[@]} 个取不到域名的节点，本次只部署：NodeID ${IDS[*]}${plain}"
+    echo -e "${yellow}  （面板配好域名与密钥后，重跑本命令即可把被剔除的节点加回来）${plain}"
+  fi
+fi
 
 echo "==== 部署节点（自动判定节点数：$COUNT） ===="
 for i in "${!IDS[@]}"; do
