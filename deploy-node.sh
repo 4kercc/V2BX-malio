@@ -24,6 +24,9 @@
 #     · 机器上还没有 V2bX → 调标准安装脚本一次装完（含 WARP 分流/系统调优/systemd）
 #     · 已经在跑      → 只追加/更新这些节点，域名自动并入机器级证书
 #                       （一张证书覆盖全机所有域名，只由第一个节点签发与续期）
+#                       已存在的节点只覆盖受管字段（面板地址/密钥/NodeID/类型/地址/证书域名），
+#                       其余字段（面板下发的 DomainStrategy/EnableDNS/EnableProxyProtocol、
+#                       Name、限速配置等）原样保留；新节点才写标准模板
 #     · 地址默认全自动（仅新节点）：ListenIP=auto（按该节点域名的 A 记录）、
 #       SendIP=auto（同进同出）、ListenIP6=auto（本机空闲公网 v6，按节点固定）；
 #       存量节点上已经钉死的地址会原样保留（除非显式传 LISTEN/LISTEN6/SEND 覆盖）
@@ -282,16 +285,29 @@ for i in "${!IDS[@]}"; do
      + (if $listen6 != "" then {ListenIP6:$listen6} else {} end)')
 
   jq --argjson node "$NODE_JSON" --arg dom "${FULL_DOMAINS[$i]}" --arg keytype "$CERT_KEY_TYPE" \
+     --arg listen6 "$LISTEN6_EFF" \
      --arg mode "$([[ "$SELF_SIGNED" == "true" ]] && echo self || echo http)" '
-    # 该节点按标准模板重写；只保留运维自己加的东西（自定义 Name / 限速配置），
-    # 证书相关字段一律丢弃（改为继承机器级证书）
+    # 新节点：写标准模板；已存在的节点：原样保留全部原有字段，只强制以下「受管字段」——
+    #   ApiHost / ApiKey / NodeID / NodeType / ListenIP / SendIP / ListenIP6 / CertConfig
+    #   （面板下发的 DomainStrategy、EnableDNS、EnableProxyProtocol，运维加的 Name、限速配置、
+    #     SniffEnabled 等一律不动、也不凭空补模板默认值）
     . as $cfg
     | ($cfg.Nodes // [] | map(select(.NodeID == $node.NodeID)) | .[0] // {}) as $old
-    | $node + (if ($old.Name // "") != "" then {Name: $old.Name} else {} end)
-              + (if ($old.LimitConfig // null) != null then {LimitConfig: $old.LimitConfig} else {} end)
+    | (if ($old | length) > 0
+       then ($old | .ApiHost = $node.ApiHost | .ApiKey = $node.ApiKey
+                  | .NodeID = $node.NodeID | .NodeType = $node.NodeType)
+       else $node end)
+    | .ListenIP = $node.ListenIP
+    | .SendIP = $node.SendIP
+    | .CertConfig = $node.CertConfig
+    | (if $listen6 != "" then .ListenIP6 = $listen6 else del(.ListenIP6) end)
     | . as $new
     | $cfg
-    | .Nodes = (($cfg.Nodes // [] | map(select(.NodeID != $node.NodeID))) + [$new])
+    | .Nodes = (($cfg.Nodes // []) as $all
+        | if ($all | map(.NodeID) | index($new.NodeID)) != null
+          then ($all | map(if .NodeID == $new.NodeID then $new else . end))   # 原地替换，保持节点顺序
+          else ($all + [$new])                                               # 新节点追加到末尾
+          end)
     | .Cert = ((.Cert // {}) + {
         CertMode: ((.Cert.CertMode // $mode)),
         KeyType: ((.Cert.KeyType // $keytype)),

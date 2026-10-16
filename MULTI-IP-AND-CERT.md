@@ -154,7 +154,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-
 - **节点数由 `$1` 自动判定**：NodeID 支持逗号或点号（`37,38,39` / `37.38.39`），域名按顺序一一对应；数量不一致会直接报错并列出两串；
 - 域名可只写前缀（`hytron1`）→ 自动拼 `DOMAIN_SUFFIX`（默认 `stpikit.com`）；
 - `ApiKey` 给**一个** = 全部节点共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应；
-- 机器上没有 V2bX → 调标准安装脚本**一次装完整机**（WARP 分流 / 系统调优 / systemd / 新式配置）；已经装过 → 只追加/更新这些节点（保留手工加的自定义 `Name` 与 `LimitConfig`，证书字段统一改成继承机器证书）；
+- 机器上没有 V2bX → 调标准安装脚本**一次装完整机**（WARP 分流 / 系统调优 / systemd / 新式配置）；已经装过 → 只追加/更新这些节点：**已存在的节点只覆盖「受管字段」**（面板地址 / 密钥 / NodeID / 节点类型 / ListenIP / SendIP / ListenIP6 / 证书域名），其余字段——面板下发的 `DomainStrategy` / `EnableDNS` / `EnableProxyProtocol`、运维加的 `Name`、限速配置、`SniffEnabled` 等——**原样保留，也不凭空补模板默认值**；证书字段统一收成 `CertDomain`（改为继承机器级证书），**新节点**才写完整标准模板；
 - 地址默认全自动（**只对新节点**）：`ListenIP=auto`（按各节点自己域名的 A 记录；**未解析到本机的节点会被单独跳过并告警，不影响同机其它节点**）、`SendIP=auto`（同进同出）、`ListenIP6=auto`（本机空闲公网 v6，按节点固定分配）；**存量节点上已经钉死的地址原样保留**（`.58` 上两个节点显式写的 v6 地址重跑后不变），想改就显式传 `LISTEN=` / `LISTEN6=` / `SEND=` 覆盖；
 - 已安装时脚本先查二进制版本：低于 v1.3.0 会拦住并提示升级（老二进制不支持 `auto`）。
 
