@@ -68,6 +68,15 @@ func serverHandle(_ *cobra.Command, _ []string) {
 	limiter.Init()
 	log.Info("Start V2bX...")
 
+	// Resolve the machine certificate ("Cert" block) and the "auto" listen/exit
+	// addresses before the cores are built: the per-node exit rules are generated
+	// from SendIP at that point, so it has to be a concrete address by then.
+	err = node.PrepareOptions(c.MachineCert, c.NodeConfig)
+	if err != nil {
+		log.WithField("err", err).Error("Prepare node options failed")
+		return
+	}
+
 	// Inject node configs into sing core for automatic outbound generation (same IP in/out)
 	for i := range c.CoresConfig {
 		if c.CoresConfig[i].Type == "sing" && c.CoresConfig[i].SingConfig != nil {

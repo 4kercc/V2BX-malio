@@ -109,7 +109,7 @@ func stubACMEIssue(t *testing.T, fn func(*conf.CertConfig) error) *int {
 
 func TestIsSelfSignedCertificatePEM(t *testing.T) {
 	dir := t.TempDir()
-	certPEM, _, err := generateSelfSslCertificatePEM("tw3.stpikit.com")
+	certPEM, _, err := generateSelfSslCertificatePEM([]string{"tw3.stpikit.com"})
 	if err != nil {
 		t.Fatalf("generate self-signed certificate: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestRequestCertInstallsFallbackWhenIssuanceFails(t *testing.T) {
 
 func TestRequestCertSkipsIssuanceWhenCertificateExists(t *testing.T) {
 	cert := fallbackTestConfig(t, "tw3.stpikit.com")
-	certPEM, _, err := generateSelfSslCertificatePEM(cert.CertDomain)
+	certPEM, _, err := generateSelfSslCertificatePEM([]string{cert.CertDomain})
 	if err != nil {
 		t.Fatalf("generate certificate: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestRequestCertSkipsIssuanceWhenCertificateExists(t *testing.T) {
 
 func TestRenewCertTaskUpgradesSelfSignedCertificate(t *testing.T) {
 	cert := fallbackTestConfig(t, "tw3.stpikit.com")
-	certPEM, keyPEM, err := generateSelfSslCertificatePEM(cert.CertDomain)
+	certPEM, keyPEM, err := generateSelfSslCertificatePEM([]string{cert.CertDomain})
 	if err != nil {
 		t.Fatalf("generate self-signed certificate: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestRenewCertTaskUpgradesSelfSignedCertificate(t *testing.T) {
 
 func TestRenewCertTaskKeepsSelfSignedCertificateWhenUpgradeFails(t *testing.T) {
 	cert := fallbackTestConfig(t, "tw3.stpikit.com")
-	certPEM, keyPEM, err := generateSelfSslCertificatePEM(cert.CertDomain)
+	certPEM, keyPEM, err := generateSelfSslCertificatePEM([]string{cert.CertDomain})
 	if err != nil {
 		t.Fatalf("generate self-signed certificate: %v", err)
 	}

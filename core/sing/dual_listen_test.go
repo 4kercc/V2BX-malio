@@ -184,3 +184,51 @@ func TestHookFoldsIPv6IngressIntoNodeTag(t *testing.T) {
 		t.Fatalf("after unlinking the tag must pass through again, got %q", got)
 	}
 }
+
+func TestPickFreeV6SkipsTakenAddresses(t *testing.T) {
+	local := []string{"2401:b60:3d:1b::2", "2401:b60:3d:1c::2", "2401:b60:3d:2::2"}
+	if got := pickFreeV6(local, map[string]bool{}); got != "2401:b60:3d:1b::2" {
+		t.Fatalf("空占用表应取第一个（排序后），got %q", got)
+	}
+	taken := map[string]bool{"2401:b60:3d:1b::2": true}
+	if got := pickFreeV6(local, taken); got != "2401:b60:3d:1c::2" {
+		t.Fatalf("必须跳过已占用地址，got %q", got)
+	}
+	full := map[string]bool{"2401:b60:3d:1b::2": true, "2401:b60:3d:1c::2": true, "2401:b60:3d:2::2": true}
+	if got := pickFreeV6(local, full); got != "" {
+		t.Fatalf("没有空闲地址时应返回空（调用方降级跳过 v6），got %q", got)
+	}
+	if got := pickFreeV6(nil, nil); got != "" {
+		t.Fatalf("本机没有公网 v6 时应返回空，got %q", got)
+	}
+}
+
+func TestResolveListenIP6KeepsExplicitValues(t *testing.T) {
+	b := &Sing{}
+	cfg := &conf.Options{ListenIP6: "2401:b60:3d:2::2"}
+	if got := b.resolveListenIP6("node_37", cfg); got != "2401:b60:3d:2::2" {
+		t.Fatalf("显式地址必须原样返回，got %q", got)
+	}
+	if got := b.resolveListenIP6("node_37", &conf.Options{ListenIP6: ""}); got != "" {
+		t.Fatalf("未配置时应返回空，got %q", got)
+	}
+}
+
+func TestTakenV6AddressesSeesOtherNodes(t *testing.T) {
+	b := &Sing{nodesConfig: []conf.NodeConfig{
+		{ApiConfig: conf.ApiConfig{NodeID: 37}, Options: conf.Options{ListenIP6: "2401:b60:3d:2::2"}},
+		{ApiConfig: conf.ApiConfig{NodeID: 38}, Options: conf.Options{ListenIP6: "auto"}},
+	}}
+	taken := b.takenV6Addresses("node_38")
+	if !taken["2401:b60:3d:2::2"] {
+		t.Fatal("其他节点显式配置的地址必须视为已占用")
+	}
+	if taken["auto"] {
+		t.Fatal("auto 占位符不能被当成地址")
+	}
+	// 自己节点的显式地址不算被别人占用
+	taken = b.takenV6Addresses("node_37")
+	if taken["2401:b60:3d:2::2"] {
+		t.Fatal("自己的地址不应出现在占用表里（否则重载时会换地址）")
+	}
+}

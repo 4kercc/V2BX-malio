@@ -112,9 +112,15 @@ type Options struct {
 	// an IPv6 (or dual-stack "::") ingress. The node keeps its users, padding,
 	// certificate, limits and traffic accounting, and SendIP still decides which
 	// source address the traffic leaves with. Write a bare address (:: or
-	// 2401:db8::1), never a bracketed value or host:port pair.
+	// 2401:db8::1), never a bracketed value or host:port pair. "auto" picks a
+	// free global IPv6 address of this machine.
 	ListenIP6              string          `json:"ListenIP6"`
 	SendIP                 string          `json:"SendIP"`
+	// ListenIPAuto / SendIPAuto record that ListenIP / SendIP were written as
+	// "auto" in the configuration file, so the value resolved at startup can be
+	// re-derived after a reload instead of being frozen by the first resolution.
+	ListenIPAuto bool `json:"-"`
+	SendIPAuto   bool `json:"-"`
 	DeviceOnlineMinTraffic int64           `json:"DeviceOnlineMinTraffic"`
 	LimitConfig            LimitConfig     `json:"LimitConfig"`
 	RawOptions             json.RawMessage `json:"RawOptions"`

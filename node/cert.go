@@ -12,6 +12,7 @@ import (
 	"math/big"
 	"os"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/InazumaV/V2bX/common/file"
@@ -87,6 +88,17 @@ func (c *Controller) requestCert() error {
 		if file.IsExist(cert.CertFile) && file.IsExist(cert.KeyFile) {
 			return nil
 		}
+		if cert.InheritFromMachine && !cert.CertOwner {
+			// This node shares the machine certificate, which a single owner node
+			// issues (a node that also issued would race with it). Reaching this
+			// point means the owner did not produce the files: report it instead
+			// of issuing a duplicate certificate.
+			log.WithFields(log.Fields{
+				"tag":  c.tag,
+				"cert": cert.CertFile,
+			}).Error("共享的机器级证书不存在：应由第一个继承该证书的节点签发，请检查它的启动日志")
+			return nil
+		}
 		err := acmeIssue(cert)
 		if err != nil {
 			return c.handleACMEIssuanceFailure(err)
@@ -99,7 +111,7 @@ func (c *Controller) requestCert() error {
 			return nil
 		}
 		err := generateSelfSslCertificate(
-			cert.CertDomain,
+			selfSignedDomains(cert),
 			cert.CertFile,
 			cert.KeyFile)
 		if err != nil {
@@ -185,49 +197,72 @@ func (c *Controller) upgradeSelfSignedCertificate() error {
 	return nil
 }
 
-// installSelfSignedCertificate generates a self-signed certificate for
-// CertDomain and installs it atomically at the configured paths.
+// installSelfSignedCertificate generates a self-signed certificate covering the
+// node's configured certificate domains and installs it atomically at the
+// configured paths.
 func installSelfSignedCertificate(cert *conf.CertConfig) error {
-	if cert.CertDomain == "" {
+	domains := selfSignedDomains(cert)
+	if len(domains) == 0 {
 		return fmt.Errorf("no certificate domain available for a self-signed certificate")
 	}
 	if cert.CertFile == "" || cert.KeyFile == "" {
 		return fmt.Errorf("cert file path or key file path not exist")
 	}
-	certPEM, keyPEM, err := generateSelfSslCertificatePEM(cert.CertDomain)
+	certPEM, keyPEM, err := generateSelfSslCertificatePEM(domains)
 	if err != nil {
 		return err
 	}
 	return writeCertificateFiles(cert.CertFile, cert.KeyFile, certPEM, keyPEM)
 }
 
-func generateSelfSslCertificate(domain, certPath, keyPath string) error {
-	certPEM, keyPEM, err := generateSelfSslCertificatePEM(domain)
+// selfSignedDomains is the name list a locally generated certificate must cover:
+// the configured domains with the "auto" placeholder already resolved, falling
+// back to CertDomain.
+func selfSignedDomains(cert *conf.CertConfig) []string {
+	var domains []string
+	for _, d := range cert.DomainsOf() {
+		if strings.EqualFold(strings.TrimSpace(d), "auto") {
+			continue
+		}
+		domains = append(domains, d)
+	}
+	return domains
+}
+
+func generateSelfSslCertificate(domains []string, certPath, keyPath string) error {
+	certPEM, keyPEM, err := generateSelfSslCertificatePEM(domains)
 	if err != nil {
 		return err
 	}
 	return writeCertificateFiles(certPath, keyPath, certPEM, keyPEM)
 }
 
-// generateSelfSslCertificatePEM builds a self-signed certificate for the
-// domain. Its lifetime is 30 years, matching the historic CertMode=self
-// behaviour, so a self-signed node never depends on renewal to stay usable.
-// Callers use it both for an explicitly configured self-signed node and as the
-// placeholder installed when automatic issuance fails.
-func generateSelfSslCertificatePEM(domain string) (certPEM, keyPEM []byte, err error) {
+// generateSelfSslCertificatePEM builds a self-signed certificate for the given
+// names (the first one is the subject). Its lifetime is 30 years, matching the
+// historic CertMode=self behaviour, so a self-signed node never depends on
+// renewal to stay usable. Callers use it both for an explicitly configured
+// self-signed node and as the placeholder installed when automatic issuance
+// fails, where a multi-name certificate keeps every landing domain working.
+func generateSelfSslCertificatePEM(domains []string) (certPEM, keyPEM []byte, err error) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate rsa key error: %s", err)
 	}
 	var dnsNames []string
-	if domain != "" {
-		dnsNames = []string{domain}
+	for _, d := range domains {
+		if strings.TrimSpace(d) != "" {
+			dnsNames = append(dnsNames, d)
+		}
+	}
+	commonName := ""
+	if len(dnsNames) > 0 {
+		commonName = dnsNames[0]
 	}
 	tmpl := &x509.Certificate{
 		Version:      3,
 		SerialNumber: big.NewInt(time.Now().Unix()),
 		Subject: pkix.Name{
-			CommonName: domain,
+			CommonName: commonName,
 		},
 		DNSNames:              dnsNames,
 		BasicConstraintsValid: true,

@@ -8,6 +8,7 @@
 
 | 版本 | 发布类型 | 核心改动说明 |
 |---|---|---|
+| **v1.3.0** | Release / 配置简化 | 1. **机器级证书块 `Cert`**：一张证书覆盖多个域名（一次 ACME order 带全部 SAN），全机节点共用，只由第一个继承它的节点（owner）签发与续期 → 5 个域名从 5 张证书变 1 张；`KeyType` 支持 ec-256/ec-384/rsa2048/rsa4096；<br>2. **地址自动推导**：`ListenIP: "auto"`（解析该节点自己 `CertDomain` 的 A 记录）、`SendIP: "auto"`（= 监听地址，同进同出）、`ListenIP6: "auto"`（本机空闲公网 v6，按节点固定不漂移）；<br>3. 实测：45.196.221.58 两个节点合签一张双域名证书（v4/v6 四个端点全部服务同一张多 SAN 证书、只有一次签发、node_38 跳过续期）；45.196.221.64 `ListenIP6=auto` 自动拿到 `2401:b60:3d:1f::2` 并外网 v6 握手成功。 |
 | **v1.2.0** | Release / IPv6 入口 | 1. 每节点可配置第二监听地址 `ListenIP6`：同一节点/用户/证书，v6 客户端的连接在 hook 层折回主 tag（限速、设备数、流量统计与 v4 一致），SendIP 出口规则同时覆盖 v6 入站 tag（**v6 进、v4 出**）；<br>2. 定位 `ListenIP=0.0.0.0` 只监听 v4 的根因（sing-box 把 `0.0.0.0` 映射成 `tcp4` 网络），单节点机可改 `::` 双栈；<br>3. 实测：45.196.221.58 两节点加 v6 监听后，外网 v6 握手返回各自证书；模拟面板集成测试确认 v6+v4 流量合计归因、出口绑定 `node_1_out`。 |
 | **v1.1.0** | Release / 证书链路 | 1. 面板驱动证书链路：域名推导取面板 `server` 主段（不用客户端伪装 SNI）、面板推送证书原子落盘、仅有域名时自动把 `CertMode=none` 提升为 `http`（`node/cert_panel.go`）；<br>2. **ACME 申请失败默认降级自签证书并告警，不再阻断节点启动**（`CertConfig.StrictACMEFailure=true` 可恢复旧行为）；续期任务每日对自签占位证书重新申请，恢复后自动换上正式证书并清除告警；<br>3. ECH 入站与面板 `server_name` 真正写入 sing-box（`core/sing/node.go` 的 `buildInboundTLS`）；<br>4. 云控可见性：agent 上报 `cert.fallback*`、新增证书探测路径，面板出事件 + Telegram/Webhook 告警 + `自签·ACME失败` 徽标。 |
 | **v1.0.9** | Release / 精简构建 | 1. 裁剪为 AnyTLS-only 精简版，移除 Xray/Hysteria2 独立内核与 quic-go 依赖；<br>2. 修复 gVisor 依赖报错，恢复 `with_gvisor` 标签；<br>3. 二进制从 134MB 降至 111MB，发布包 44MB 降至 35MB。 |
@@ -151,3 +152,15 @@
    ```
 6. **云控全网铺开 agent 新版本**：代码 `git push` 后，面板「⚙ 全局设置 → Agent 目标版本」填新版本号即可；节点心跳发现落后会自拉更新（1~2 分钟），查落后节点看节点详情里的 `Agent vX`。
 7. **云控媒体检测即席复测**：面板勾选节点（或选「目标分组」）→「🌐 媒体检测」；探测按各节点自己的出口 IP 进行，悬停图标可见出口 IP / 绑定源。
+
+### 7. 机器级证书与地址自动推导（v1.3.0）
+
+* **配置形态**（一台机器写一次，`MULTI-IP-AND-CERT.md` 有完整说明）：
+  ```json
+  "Cert": { "CertMode": "http", "CertDomains": ["a.example.com","b.example.com"], "KeyType": "ec-256", "Email": "..." },
+  "Nodes": [ { "NodeID": 37, "NodeType": "anytls", "ListenIP": "auto", "SendIP": "auto", "ListenIP6": "auto",
+               "CertConfig": { "CertDomain": "a.example.com" } } ]
+  ```
+* **实现**：`conf/conf.go` 顶层 `MachineCert`；`conf/cert.go` 的 `CertDomains`/`KeyType`/`DomainsOf()`/`MergeCertConfig()`（字段级继承，节点显式值优先，bool 取或）；`node/net_auto.go` 的 `PrepareOptions()`（启动时解析域名 `auto` → 聚合本机节点声明的域名、填默认路径/邮箱、逐节点合并、指定唯一 owner；并在**合并之前**解析 auto 地址，否则会用机器级域名并集把节点解析到别人的 IP）；`node/lego.go` 一次 order 多 SAN + `certKeyType()`；`node/cert.go` 自签兜底多 SAN；非 owner 节点不签发不续期（`node/cert.go` + `node/task.go` 的日志「共享机器级证书由 owner 节点续期，本节点跳过」）。
+* **地址 auto**：`ListenIP: auto` = 该节点自己 `CertDomain` 的 A 记录（多 A 取最小并告警；解析重试 3 次后**报错而不是静默监听错误地址**）；`SendIP: auto` = 解析后的监听地址（通配地址则不绑定并告警）——必须在核心构造前解析，因为 `buildSendIPRoute()` 的出口规则在那时生成；`ListenIP6: auto` = `core/sing` 在本机公网 v6 里取一个空闲地址，**按节点 tag 固定**（重载不漂移，AAAA 稳定），跳过其它节点显式占用的地址，本机没有空闲 v6 时只跳过 v6 入口。
+* **与云控并存**：agent 仍按 NodeID 逐节点下发（CertDomain/NodeType/ListenIP6/GoogleV4 等），机器级 `Cert` 块是配置层的东西、agent 不动它；agent 只写节点级 `CertDomain` 不会破坏继承（继承是逐字段的）。

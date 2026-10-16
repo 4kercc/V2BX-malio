@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/InazumaV/V2bX/api/panel"
@@ -232,10 +234,107 @@ func planListeners(listenIP, listenIP6 string) (primary, secondary, note string)
 	return listenIP, listenIP6, ""
 }
 
+// resolveListenIP6 turns ListenIP6="auto" into a free global IPv6 address of
+// this machine. The assignment is remembered per node tag so a reload never
+// moves the address (AAAA records stay valid), and addresses that other nodes
+// configure explicitly are never taken.
+func (b *Sing) resolveListenIP6(tag string, config *conf.Options) string {
+	if !strings.EqualFold(strings.TrimSpace(config.ListenIP6), "auto") {
+		return config.ListenIP6
+	}
+	b.v6Mu.Lock()
+	defer b.v6Mu.Unlock()
+
+	taken := b.takenV6Addresses(tag)
+	if assigned, ok := b.v6Assign.Load(tag); ok {
+		addr := assigned.(string)
+		if !taken[addr] && isLocalGlobalIPv6(addr) {
+			return addr
+		}
+	}
+	if addr := pickFreeV6(localGlobalIPv6Addrs(), taken); addr != "" {
+		b.v6Assign.Store(tag, addr)
+		log.Info(fmt.Sprintf("Node %s: ListenIP6=auto -> %s", tag, addr))
+		return addr
+	}
+	log.Error(fmt.Sprintf("Node %s: ListenIP6=auto 但本机没有空闲的公网 IPv6 地址，v6 入口已跳过", tag))
+	return ""
+}
+
+// pickFreeV6 returns the first address nobody has claimed yet, taking both lists
+// in their stable (sorted) order so repeated runs make the same choice.
+func pickFreeV6(local []string, taken map[string]bool) string {
+	for _, addr := range local {
+		if !taken[addr] {
+			return addr
+		}
+	}
+	return ""
+}
+
+// takenV6Addresses lists the IPv6 addresses already spoken for: configured
+// explicitly by other nodes, or handed to them by "auto".
+func (b *Sing) takenV6Addresses(selfTag string) map[string]bool {
+	taken := map[string]bool{}
+	for _, nc := range b.nodesConfig {
+		name := nc.Options.Name
+		if name == "" {
+			name = "node_" + strconv.Itoa(nc.ApiConfig.NodeID)
+		}
+		if name == selfTag {
+			continue
+		}
+		addr := strings.TrimSpace(nc.Options.ListenIP6)
+		if addr != "" && !strings.EqualFold(addr, "auto") {
+			taken[addr] = true
+		}
+	}
+	b.v6Assign.Range(func(key, value any) bool {
+		if key.(string) != selfTag {
+			taken[value.(string)] = true
+		}
+		return true
+	})
+	return taken
+}
+
+// localGlobalIPv6Addrs returns this machine's global IPv6 addresses in a stable
+// order, which keeps "auto" assignments reproducible across restarts.
+func localGlobalIPv6Addrs() []string {
+	list, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, a := range list {
+		ipNet, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip := ipNet.IP
+		if ip.To4() != nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsPrivate() {
+			continue
+		}
+		out = append(out, ip.String())
+	}
+	sort.Strings(out)
+	return out
+}
+
+func isLocalGlobalIPv6(addr string) bool {
+	for _, a := range localGlobalIPv6Addrs() {
+		if a == addr {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
-	primary, secondary, note := planListeners(config.ListenIP, config.ListenIP6)
+	listenIP6 := b.resolveListenIP6(tag, config)
+	primary, secondary, note := planListeners(config.ListenIP, listenIP6)
 	if note != "" {
-		log.Info(fmt.Sprintf("Node %s: extra listen address %s skipped: %s", tag, config.ListenIP6, note))
+		log.Info(fmt.Sprintf("Node %s: extra listen address %s skipped: %s", tag, listenIP6, note))
 	}
 	err := b.createInbound(tag, info, config, primary)
 	if err != nil {

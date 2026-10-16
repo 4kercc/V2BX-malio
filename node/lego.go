@@ -40,7 +40,7 @@ func NewLego(config *conf.CertConfig) (*Lego, error) {
 	}
 	c := lego.NewConfig(user)
 	//c.CADirURL = "http://192.168.99.100:4000/directory"
-	c.Certificate.KeyType = certcrypto.RSA2048
+	c.Certificate.KeyType = certKeyType(config.KeyType)
 	client, err := lego.NewClient(c)
 	if err != nil {
 		return nil, err
@@ -89,9 +89,32 @@ func (l *Lego) SetProvider() error {
 	return nil
 }
 
+// certKeyType maps the configured key type onto lego's. RSA2048 stays the
+// default so existing configurations keep the same keys after an upgrade.
+func certKeyType(name string) certcrypto.KeyType {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "ec-256", "ec256", "p256", "ecdsa256":
+		return certcrypto.EC256
+	case "ec-384", "ec384", "p384", "ecdsa384":
+		return certcrypto.EC384
+	case "rsa-4096", "rsa4096":
+		return certcrypto.RSA4096
+	case "rsa-2048", "rsa2048", "":
+		return certcrypto.RSA2048
+	default:
+		return certcrypto.RSA2048
+	}
+}
+
 func (l *Lego) CreateCert() (err error) {
+	domains := l.config.DomainsOf()
+	if len(domains) == 0 {
+		return fmt.Errorf("no certificate domain configured")
+	}
+	// One order for every name: a machine with several landing domains gets a
+	// single certificate with all of them as SANs instead of one per node.
 	request := certificate.ObtainRequest{
-		Domains: []string{l.config.CertDomain},
+		Domains: domains,
 		Bundle:  true,
 	}
 	certificates, err := l.client.Certificate.Obtain(request)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"sync"
 	"strconv"
 
 	"github.com/sagernet/sing-box/include"
@@ -33,6 +34,11 @@ type Sing struct {
 	hookServer *HookServer
 	router     adapter.Router
 	logFactory log.Factory
+	// nodesConfig is the static per-node configuration: exit rules are generated
+	// from it and "ListenIP6": "auto" assignments are planned against it.
+	nodesConfig []conf.NodeConfig
+	v6Assign    sync.Map // node tag -> IPv6 address assigned for "auto"
+	v6Mu        sync.Mutex
 }
 
 func init() {
@@ -135,11 +141,12 @@ func New(c *conf.CoreConfig) (vCore.Core, error) {
 	hs := NewHookServer()
 	b.Router().AppendTracker(hs)
 	return &Sing{
-		ctx:        b.Router().GetCtx(),
-		box:        b,
-		hookServer: hs,
-		router:     b.Router(),
-		logFactory: b.LogFactory(),
+		ctx:         b.Router().GetCtx(),
+		box:         b,
+		hookServer:  hs,
+		router:      b.Router(),
+		logFactory:  b.LogFactory(),
+		nodesConfig: c.SingConfig.NodesConfig,
 	}, nil
 }
 

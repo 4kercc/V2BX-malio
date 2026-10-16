@@ -30,6 +30,12 @@ func (c *Controller) startTasks(node *panel.NodeInfo) {
 		switch c.CertConfig.CertMode {
 		case "none", "", "file", "self":
 		default:
+			// A certificate shared by the machine is renewed once, by the node
+			// that owns it: several nodes renewing the same files would race.
+			if c.CertConfig.InheritFromMachine && !c.CertConfig.CertOwner {
+				log.WithField("tag", c.tag).Info("共享机器级证书由 owner 节点续期，本节点跳过")
+				break
+			}
 			c.renewCertPeriodic = &task.Task{
 				Interval: time.Hour * 24,
 				Execute:  c.renewCertTask,

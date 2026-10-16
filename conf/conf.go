@@ -14,6 +14,12 @@ type Conf struct {
 	LogConfig   LogConfig    `json:"Log"`
 	CoresConfig []CoreConfig `json:"Cores"`
 	NodeConfig  []NodeConfig `json:"Nodes"`
+	// MachineCert is a certificate shared by this machine's nodes: issued once
+	// (a single ACME order covering every name in CertDomains) and reused by all
+	// of them, instead of one certificate per node. A node still overrides any
+	// field it sets itself, and "Domains": ["auto"] takes the names the machine's
+	// nodes declare, so a five-domain machine signs one certificate.
+	MachineCert *CertConfig `json:"Cert"`
 }
 
 func New() *Conf {
