@@ -153,6 +153,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-
 
 - **节点数由 `$1` 自动判定**：NodeID 支持逗号或点号（`37,38,39` / `37.38.39`），域名按顺序一一对应；数量不一致会直接报错并列出两串；
 - 域名可只写前缀（`hytron1`）→ 自动拼 `DOMAIN_SUFFIX`（默认 `stpikit.com`）；
+- **域名写 `null` / `auto` / `panel` = 安装时直接问面板要该节点的域名（heki 风格，免手填）**：多节点可以整列只写一个 `null`，各节点各自去要自己的域名；脚本先打 SSPanel 的 `/mod_mu/nodes/<ID>/info?key=…`，取不到再打 V2board 的 `/api/v1/server/UniProxy/config`，从 `server` 字段（形如 `jp.gpfggtech.xyz;port=443&server_name=…`）取分号前的域名。面板里该节点没配域名（server 是 IP）或密钥/NodeID 不对 → 打印中文原因并把**这个节点从本次部署剔除**（连同它那一位的 ApiKey），一个都不成功就直接退出、不做任何更改；面板里该节点的域名必须已解析到本机（后面 DNS 预检会拦）；
+- **域名写 `self` / `selfsigned` = 强制自签**（不申请 ACME；一台机器只能统一一种证书，与域名混用会直接报错）；
 - `ApiKey` 给**一个** = 全部节点共用（面板常见做法）；给逗号分隔的一串 = 按节点顺序对应；
 - 机器上没有 V2bX → 调标准安装脚本**一次装完整机**（WARP 分流 / 系统调优 / systemd / 新式配置）；已经装过 → 只追加/更新这些节点：**已存在的节点只覆盖「受管字段」**（面板地址 / 密钥 / NodeID / 节点类型 / ListenIP / SendIP / ListenIP6 / 证书域名），其余字段——面板下发的 `DomainStrategy` / `EnableDNS` / `EnableProxyProtocol`、运维加的 `Name`、限速配置、`SniffEnabled` 等——**原样保留，也不凭空补模板默认值**；证书字段统一收成 `CertDomain`（改为继承机器级证书），**新节点**才写完整标准模板；
 - 地址默认全自动（**只对新节点**）：`ListenIP=auto`（按各节点自己域名的 A 记录；**未解析到本机的节点会被单独跳过并告警，不影响同机其它节点**）、`SendIP=auto`（同进同出）、`ListenIP6=auto`（本机空闲公网 v6，按节点固定分配）；**存量节点上已经钉死的地址原样保留**（`.58` 上两个节点显式写的 v6 地址重跑后不变），想改就显式传 `LISTEN=` / `LISTEN6=` / `SEND=` 覆盖；
@@ -188,7 +190,7 @@ NODE_IDS="37,38,39" DOMAINS="a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg" \
 | 参数 1 | API_HOST | 面板地址，如 `https://72v.net` |
 | 参数 2 | API_KEY | 该节点的面板密钥（每个节点不同） |
 | 参数 3 | NODE_ID | 面板里的节点 ID |
-| 参数 4 | DOMAIN | 证书域名（`hytron1.wukong.us.kg`）；写 `null` = 自签 |
+| 参数 4 | DOMAIN | 证书域名（`hytron1.wukong.us.kg`）；写 `null`/`auto`/`panel` = 从面板取；`self` = 自签；留空 = 自签 |
 | 参数 5 | WARP_MODE | `on`/`off`，默认 on |
 | 参数 6/7/8 | 云控 URL / Token / insecure | 可选；节点装好并重启后自动委托 `cloud-join.sh` 接入（幂等、按 IP 复用身份） |
 | 交互询问 | 节点数量 / NodeID / 域名 / ListenIP / ListenIP6 / SendIP | 见下表 |
@@ -244,7 +246,7 @@ NODE_IDS="37,38,39" DOMAINS="a.wukong.us.kg,b.wukong.us.kg,c.wukong.us.kg" \
 |---|---|
 | 域名解析到本机 | ✓ 通过（多个 A 记录里如有不指向本机的会额外提醒，http-01 可能随机打到那边失败） |
 | 没有 A 记录 / 解析到别处 | ✗ 打印诊断与三种处理办法后 **exit 1**，未做任何更改 |
-| 自签模式（域名写 `null`） | 跳过预检（不使用证书域名） |
+| 自签模式（域名写 `self`） | 跳过预检（不使用证书域名） |
 | `CERT_DNS_PROVIDER`（dns-01）+ 显式 `LISTEN` | 跳过预检（域名本就不必指向本机） |
 | `SKIP_DNS_CHECK=1` | 跳过并明确提示"未解析到本机的节点会在启动时被单独跳过" |
 
