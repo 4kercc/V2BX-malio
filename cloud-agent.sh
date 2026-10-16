@@ -15,7 +15,7 @@
 CONF="/etc/V2bX/cloud.conf"
 CONFIG_JSON="/etc/V2bX/config.json"
 LOGTAG="v2bx-cloud"
-AGENT_VER="26"
+AGENT_VER="27"
 # agent 版本: 改动了 agent 逻辑就 +1（自更新按"下载版本 > 当前版本"才生效，不改则新脚本永远铺不开）
 # 媒体探测逻辑版本：改了探测方式（如绑定出口 IP、地址族策略）就 +1，
 # 服务端 MEDIA_PV 同步提升后会让全队旧结果立即失效并自动重测（不用等 12 小时）
@@ -144,6 +144,7 @@ cert_probe() { # $1=CertFile $2=CertDomain → 设置 CERT_PATH/CERT_DOMAIN/CERT
   if [[ -n "$dom" ]]; then
     for d in "/etc/ssl/${dom}.crt" "/etc/ssl/certs/${dom}.crt" "/etc/V2bX/cert/${dom}.crt" \
              "/etc/V2bX/cert/${dom}/fullchain.pem" \
+             "/etc/V2bX/cert/machine/fullchain.pem" \
              "/etc/V2bX/certs/${dom}.crt" "/etc/V2bX/${dom}.crt" "/root/cert/${dom}.crt" \
              "/etc/letsencrypt/live/${dom}/fullchain.pem" \
              "/root/.acme.sh/${dom}_ecc/fullchain.cer" "/root/.acme.sh/${dom}/fullchain.cer"; do
@@ -525,8 +526,19 @@ for ((i=0; i<NODE_CNT; i++)); do
     log "node $NID: CertDomain 含非法字符，已忽略: $WANT_DOM"
     WANT_DOM=""
   fi
+  # 机器级证书（config.json 顶层 "Cert" 块，v1.3.0+）由 V2bX 自己签发/续期并覆盖全机域名：
+  # 这种机器上绝不能再给单个节点写 CertFile/KeyFile —— 节点级配置会覆盖机器级继承，
+  # 结果就是这张多域名机器证书被一张单域名自签证书顶掉。
+  HAS_MACHINE_CERT=0
+  if jq -e '.Cert' "$CONFIG_JSON" >/dev/null 2>&1; then
+    MC_FILE=$(jq -r '.Cert.CertFile // empty' "$CONFIG_JSON" 2>/dev/null)
+    [[ -z "$MC_FILE" ]] && MC_FILE="/etc/V2bX/cert/machine/fullchain.pem"
+    [[ -f "$MC_FILE" ]] && HAS_MACHINE_CERT=1
+  fi
   if [[ -n "$WANT_DOM" && "$WANT_DOM" != "$C_DOM" ]]; then
-    if [[ ! -f "/etc/ssl/${WANT_DOM}.crt" || ! -f "/etc/ssl/${WANT_DOM}.key" ]]; then
+    if [[ "$HAS_MACHINE_CERT" == "1" ]]; then
+      log "node $NID: 本机使用机器级证书（$MC_FILE），只更新 CertDomain=$WANT_DOM，不动证书路径"
+    elif [[ ! -f "/etc/ssl/${WANT_DOM}.crt" || ! -f "/etc/ssl/${WANT_DOM}.key" ]]; then
       mkdir -p /etc/ssl
       if openssl req -x509 -nodes -newkey rsa:2048 \
            -keyout "/etc/ssl/${WANT_DOM}.key" -out "/etc/ssl/${WANT_DOM}.crt" \

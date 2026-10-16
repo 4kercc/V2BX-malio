@@ -4,6 +4,19 @@ set -e
 
 ############################################
 # 共用参数
+#   1 API_HOST   面板地址（如 https://72v.net）
+#   2 API_KEY    面板节点密钥
+#   3 NODE_ID    节点 ID
+#   4 DOMAIN     证书域名（写 null = 用自签证书）
+#   5 WARP_MODE  on/off（默认 on）
+#   6/7/8        云控中心地址 / Token / insecure（可选）
+#
+# 进阶（环境变量，都可省；v1.3.0 起一张证书覆盖多个域名、地址可自动推导）：
+#   LISTEN=auto                  监听地址（auto=按该节点域名的 A 记录解析；也可 0.0.0.0 / :: / 具体 IP）
+#   LISTEN6=auto                 IPv6 入口（auto=本机空闲公网 v6；留空=不启用）
+#   SEND=auto                    出口地址（auto=跟随监听地址，同进同出；0=不绑定）
+#   CERT_KEY_TYPE=ec-256         证书密钥类型（ec-256 / ec-384 / rsa2048 / rsa4096）
+#   CERT_DNS_PROVIDER=cloudflare 用 dns-01 签发（域名不必指向本机；另配 CF_DNS_API_TOKEN 等）
 ############################################
 API_HOST="${1:-}"
 API_KEY="${2:-}"
@@ -16,6 +29,13 @@ WARP_MODE="${5:-on}"
 CLOUD_URL="${6:-}"
 CLOUD_TOKEN="${7:-}"
 CLOUD_INSECURE="${8:-}"
+
+# 地址与证书的可选项（不填就用推荐值）
+LISTEN_OPT="${LISTEN:-}"
+LISTEN6_OPT="${LISTEN6:-}"
+SEND_OPT="${SEND:-}"
+CERT_KEY_TYPE="${CERT_KEY_TYPE:-ec-256}"
+CERT_DNS_PROVIDER="${CERT_DNS_PROVIDER:-}"
 
 WARP_ENABLED=true
 case "$WARP_MODE" in
@@ -35,24 +55,57 @@ elif [[ "$DOMAIN" == "null" || "$DOMAIN" == "NULL" ]]; then
 fi
 
 ############################################
-# 端口80检查（仅在需要申请ACME证书时检查）
+# 端口80提示（不再阻断安装）
+#   v1.1.0 起证书申请失败会自动降级自签并告警，节点照常启动；
+#   80 被占用时只有"自动签发/续期"会失败，这里只做提醒。
 ############################################
 if [[ "$USE_SELF_SIGNED" != "true" ]]; then
-  if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "[ERROR] 端口 80 已被占用，无法申请 ACME 证书，安装退出。"
-    exit 1
+  if lsof -i :80 -sTCP:LISTEN >/dev/null 2>&1 || ss -ltn 2>/dev/null | grep -q ':80 '; then
+    echo "[提示] 端口 80 已被占用：http-01 证书校验会失败，节点将以自签证书启动并每天重试（如需正式证书请腾出 80，或改用 CERT_DNS_PROVIDER 走 dns-01）。"
   fi
 fi
 
-declare -a NODE_IDS DOMAINS SEND_IPS LISTEN_IPS
+declare -a NODE_IDS DOMAINS SEND_IPS LISTEN_IPS LISTEN6_IPS
+
+# 域名是否已经指向本机（决定能不能用 ListenIP=auto）
+domain_points_here() {
+  local dom="$1" ip local_ips
+  [[ -z "$dom" ]] && return 1
+  [[ "$dom" == *.selfsigned.local ]] && return 1
+  ip=$(getent ahostsv4 "$dom" 2>/dev/null | awk 'NR==1{print $1}')
+  [[ -z "$ip" ]] && return 1
+  local_ips=$(ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1]}')
+  grep -qxF "$ip" <<<"$local_ips"
+}
+
+# 本机是否有公网 IPv6
+has_public_v6() {
+  ip -6 -o addr show scope global 2>/dev/null | grep -qv 'inet6 fe80' && return 0
+  return 1
+}
 
 if [[ -n "$API_HOST" && -n "$API_KEY" && -n "$NODE_ID" ]]; then
   AUTO_INSTALL=true
   NODE_COUNT=1
   NODE_IDS=("$NODE_ID")
   DOMAINS=("$DOMAIN")
-  LISTEN_IPS=("0.0.0.0")
-  SEND_IPS=("0.0.0.0")
+  # 命令行模式：默认 auto（按域名解析监听地址、出口跟随、v6 自动分配）
+  if [[ -n "$LISTEN_OPT" ]]; then
+    LISTEN_IPS=("$LISTEN_OPT")
+  elif domain_points_here "$DOMAIN"; then
+    LISTEN_IPS=("auto")
+  else
+    LISTEN_IPS=("0.0.0.0")
+    echo "[提示] 域名 $DOMAIN 当前未解析到本机，ListenIP 用 0.0.0.0；DNS 就绪后可在 config.json 改成 auto"
+  fi
+  if [[ -n "$LISTEN6_OPT" ]]; then
+    LISTEN6_IPS=("$LISTEN6_OPT")
+  elif has_public_v6; then
+    LISTEN6_IPS=("auto")
+  else
+    LISTEN6_IPS=("")
+  fi
+  SEND_IPS=("${SEND_OPT:-auto}")
   ACME_EMAIL="v2bx@github.com"
 else
   AUTO_INSTALL=false
@@ -100,8 +153,9 @@ else
   ############################################
   echo ""
   echo "==== 节点配置 ===="
-  echo "提示：ListenIP 建议填 0.0.0.0（IPv4监听全部）或 :: （IPv6+IPv4双栈监听全部）"
-  echo "      SendIP 填哪个IP，流量就从哪个IP出"
+  echo "提示：ListenIP 填 auto = 按该节点域名的 A 记录自动定监听地址（推荐，域名需已指向本机）"
+  echo "      也可填 0.0.0.0（仅 IPv4 全部）或 :: （IPv6+IPv4 双栈全部）或具体 IP"
+  echo "      SendIP auto = 出口跟随监听地址（同进同出）；ListenIP6 auto = 本机空闲公网 v6"
   read -p "节点数量: " NODE_COUNT
 
   for ((i=1; i<=NODE_COUNT; i++)); do
@@ -110,35 +164,64 @@ else
     read -p "  NodeID: " nid
     read -p "  域名 (certdomain): " dom
 
-    # ListenIP：默认 0.0.0.0
-    read -p "  ListenIP [0.0.0.0]: " lip
-    lip=${lip:-0.0.0.0}
+    # ListenIP：域名已指向本机则默认 auto，否则默认 0.0.0.0（auto 依赖 DNS）
+    lip_default="0.0.0.0"
+    if [[ -z "$LISTEN_OPT" ]] && domain_points_here "$dom"; then
+      lip_default="auto"
+      echo "  （检测到 $dom 已指向本机，ListenIP 默认 auto）"
+    elif [[ -n "$LISTEN_OPT" ]]; then
+      lip_default="$LISTEN_OPT"
+    fi
+    read -p "  ListenIP [$lip_default]: " lip
+    lip=${lip:-$lip_default}
 
-    # SendIP：支持序号快捷输入
-    echo -n "  SendIP"
-    if [[ ${#PUB_IPS[@]} -gt 1 ]]; then
-      echo -n " (输入IP或选序号 1-${#PUB_IPS[@]}, 0=0.0.0.0, 回车=自动)"
+    # ListenIP6：本机有公网 v6 时默认 auto
+    if [[ -n "$LISTEN6_OPT" ]]; then
+      lip6_default="$LISTEN6_OPT"
+    elif has_public_v6; then
+      lip6_default="auto"
     else
-      echo -n " (回车=0.0.0.0)"
+      lip6_default=""
+    fi
+    read -p "  ListenIP6 [$lip6_default]（留空=不启用 IPv6 入口）: " lip6
+    lip6=${lip6:-$lip6_default}
+
+    # SendIP：默认 auto（跟随 ListenIP）；也支持序号快捷选具体 IP
+    echo -n "  SendIP [${SEND_OPT:-auto}]"
+    if [[ ${#PUB_IPS[@]} -gt 1 ]]; then
+      echo -n " (回车=auto；输入序号 1-${#PUB_IPS[@]} 或直接写 IP；0=不绑定)"
+    else
+      echo -n " (回车=auto=跟随 ListenIP；0=不绑定)"
     fi
     echo -n ": "
     read sip
 
     # 解析 SendIP：支持序号、IP、空
     if [[ -z "$sip" ]]; then
-      sip="0.0.0.0"
+      sip="${SEND_OPT:-auto}"
     elif [[ "$sip" == "0" ]]; then
       sip="0.0.0.0"
     elif [[ "$sip" =~ ^[0-9]+$ ]] && [[ $sip -ge 1 ]] && [[ $sip -le ${#PUB_IPS[@]} ]]; then
       sip="${PUB_IPS[$((sip-1))]}"
     fi
-    # 否则原样使用（用户手打了IP）
+    # 否则原样使用（用户手打了IP / auto）
 
     NODE_IDS+=("$nid")
     DOMAINS+=("$dom")
     LISTEN_IPS+=("$lip")
+    LISTEN6_IPS+=("$lip6")
     SEND_IPS+=("$sip")
   done
+fi
+
+############################################
+# 证书方案（v1.3.0 起：一台机器一张证书，覆盖全部域名）
+############################################
+CERT_DOMAINS_JSON=$(printf '%s\n' "${DOMAINS[@]}" | awk 'NF && !seen[$0]++ {printf "%s\"%s\"", sep, $0; sep=", "}')
+CERT_MODE="http"
+if [[ "$USE_SELF_SIGNED" == "true" ]]; then
+  CERT_MODE="self"
+  [[ -z "$CERT_DNS_PROVIDER" ]] && CERT_DNS_PROVIDER=""
 fi
 
 ############################################
@@ -150,8 +233,14 @@ echo "API_HOST : $API_HOST"
 echo "WARP分流 : $WARP_ENABLED"
 echo "节点数   : $NODE_COUNT"
 for ((i=0; i<NODE_COUNT; i++)); do
-  echo "  节点$((i+1)): NodeID=${NODE_IDS[$i]}  域名=${DOMAINS[$i]}  ListenIP=${LISTEN_IPS[$i]}  SendIP=${SEND_IPS[$i]}"
+  echo "  节点$((i+1)): NodeID=${NODE_IDS[$i]}  域名=${DOMAINS[$i]}  ListenIP=${LISTEN_IPS[$i]}  ListenIP6=${LISTEN6_IPS[$i]:-无}  SendIP=${SEND_IPS[$i]}"
 done
+echo "证书     : $CERT_MODE，一张证书覆盖 [$CERT_DOMAINS_JSON]，密钥类型 $CERT_KEY_TYPE"
+if [[ "$USE_SELF_SIGNED" != "true" && "$CERT_MODE" == "http" ]]; then
+  needs_dns=false
+  for dom in "${DOMAINS[@]}"; do domain_points_here "$dom" || needs_dns=true; done
+  [[ "$needs_dns" == "true" ]] && echo "          注意：有域名当前未指向本机，http-01 校验会失败（将先以自签证书启动）"
+fi
 if [[ "$AUTO_INSTALL" != "true" ]]; then
   read -p "确认无误？回车继续 Ctrl+C 取消 ..."
 fi
@@ -305,16 +394,10 @@ SSL_DIR="/etc/ssl"
 mkdir -p $CONFIG_DIR $SSL_DIR
 
 ############################################
-# fallback certs for all domains
+# 证书：不再预生成自签、也不再外挂 acme.sh
+#   v1.1.0 起 V2bX 自己申请证书、失败自动降级自签并每天重试；
+#   v1.3.0 起一张机器级证书覆盖全部域名（只由第一个节点签发与续期）。
 ############################################
-for dom in "${DOMAINS[@]}"; do
-  echo "生成自签证书: $dom"
-  openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout ${SSL_DIR}/${dom}.key \
-    -out ${SSL_DIR}/${dom}.crt \
-    -subj "/CN=${dom}" \
-    -days 3650
-done
 
 ############################################
 # 生成 Nodes JSON 数组
@@ -324,9 +407,9 @@ gen_nodes() {
   for ((i=0; i<NODE_COUNT; i++)); do
     $first || echo ","
     first=false
-    local cert_mode="http"
-    if [[ "$USE_SELF_SIGNED" == "true" ]]; then
-      cert_mode="none"
+    local listen6_line=""
+    if [[ -n "${LISTEN6_IPS[$i]:-}" ]]; then
+      listen6_line="\"ListenIP6\": \"${LISTEN6_IPS[$i]}\","
     fi
     cat <<EOF
     {
@@ -337,22 +420,14 @@ gen_nodes() {
       "NodeType": "anytls",
       "Timeout": 30,
       "ListenIP": "${LISTEN_IPS[$i]}",
+      ${listen6_line}
       "SendIP": "${SEND_IPS[$i]}",
       "DeviceOnlineMinTraffic": 200,
       "MinReportTraffic": 0,
       "TCPFastOpen": false,
       "SniffEnabled": true,
       "CertConfig": {
-        "CertMode": "${cert_mode}",
-        "RejectUnknownSni": false,
-        "CertDomain": "${DOMAINS[$i]}",
-        "CertFile": "${SSL_DIR}/${DOMAINS[$i]}.crt",
-        "KeyFile": "${SSL_DIR}/${DOMAINS[$i]}.key",
-        "Email": "${ACME_EMAIL}",
-        "Provider": "cloudflare",
-        "DNSEnv": {
-          "EnvName": "env1"
-        }
+        "CertDomain": "${DOMAINS[$i]}"
       }
     }
 EOF
@@ -361,12 +436,27 @@ EOF
 
 ############################################
 # config.json
+#   "Cert" 是机器级证书：一张证书覆盖本机全部节点域名，
+#   只由第一个节点签发与续期（改域名后重启会自动重新签发一次）。
 ############################################
+CERT_PROVIDER_JSON=""
+if [[ -n "$CERT_DNS_PROVIDER" ]]; then
+  CERT_PROVIDER_JSON="    \"Provider\": \"${CERT_DNS_PROVIDER}\",
+    \"DNSEnv\": { \"CF_DNS_API_TOKEN\": \"${CF_DNS_API_TOKEN:-}\" },
+"
+fi
+
 cat > ${CONFIG_DIR}/config.json <<EOF
 {
   "Log": {
     "Level": "info",
     "Output": ""
+  },
+  "Cert": {
+    "CertMode": "${CERT_MODE}",
+    "CertDomains": [${CERT_DOMAINS_JSON}],
+    "KeyType": "${CERT_KEY_TYPE}",
+${CERT_PROVIDER_JSON}    "Email": "${ACME_EMAIL:-v2bx@github.com}"
   },
   "Cores": [
     {
@@ -535,37 +625,15 @@ fi
 echo "WARP 分流模式: $(cat ${CONFIG_DIR}/warp_mode)（可用 v2bx warp on/off/status 随时切换）"
 
 ############################################
-# ACME for all domains
+# 证书签发：交给 V2bX 自己（不再外挂 acme.sh）
+#   - 首次启动时按上面 "Cert" 块申请一张覆盖全部域名的证书（http-01 或 dns-01）
+#   - 失败自动降级为多域名自签证书并告警，节点照常起来；每天自动重试
+#   - 续期由第一个节点负责，日志里能看到 acme 的申请/续期过程
 ############################################
 if [[ "$USE_SELF_SIGNED" == "true" ]]; then
-  echo "检测到使用自签证书模式 (域名为 null)，跳过 ACME 证书申请。"
+  echo "自签证书模式：V2bX 启动时会生成覆盖全部域名的自签证书（无需 ACME）。"
 else
-  ACME=~/.acme.sh/acme.sh
-
-  if ! command -v $ACME &>/dev/null; then
-    curl https://get.acme.sh | sh
-  fi
-
-  set +e
-
-  $ACME --set-default-ca --server letsencrypt >/dev/null 2>&1
-  $ACME --register-account -m $ACME_EMAIL >/dev/null 2>&1
-  $ACME --install-cronjob >/dev/null 2>&1
-
-  for dom in "${DOMAINS[@]}"; do
-    echo "申请 ACME 证书: $dom"
-    $ACME --issue -d ${dom} --standalone --keylength ec-256 --force
-
-    if [[ $? -eq 0 ]]; then
-      $ACME --install-cert \
-        -d ${dom} \
-        --fullchain-file ${SSL_DIR}/${dom}.crt \
-        --key-file ${SSL_DIR}/${dom}.key \
-        --reloadcmd "systemctl restart V2bX"
-    fi
-  done
-
-  set -e
+  echo "证书模式 $CERT_MODE：V2bX 启动时自动申请 $CERT_DOMAINS_JSON（一张证书覆盖全部域名）"
 fi
 
 ############################################

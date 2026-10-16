@@ -137,3 +137,61 @@ journalctl -u V2bX | grep "Auto-configured outbound node_"
 ```
 
 回滚：删掉顶层 `Cert` 块、把各节点的 `ListenIP/SendIP` 写回具体地址、恢复各自的 `CertConfig`，重启即可；老配置（没有 `Cert` 块、`ListenIP` 是具体地址）行为与本版本之前**完全一致**（有单测覆盖）。
+
+---
+
+## 6. 安装与部署：填哪些字段
+
+### 6.1 一条命令加一个节点（推荐，soga 风格）
+
+```bash
+# 首次安装（本机还没有 V2bX）：会走标准安装 + 写这个节点
+bash <(curl -Ls https://raw.githubusercontent.com/4kercc/V2BX-malio/main/deploy-node.sh) 37 hytron1.wukong.us.kg https://72v.net <面板密钥>
+
+# 同一台机器再加节点：只追加，域名自动并入机器级证书
+bash <(curl -Ls .../deploy-node.sh) 38 hytron1-1.wukong.us.kg
+```
+
+参数：`$1`=NodeID（必填）、`$2`=域名（必填；只写前缀时用 `DOMAIN_SUFFIX`，默认 `stpikit.com`）、`$3`=ApiHost、`$4`=ApiKey（也可用环境变量 `API_HOST`/`API_KEY`，缺省会交互询问）。
+
+可选环境变量：`LISTEN` / `LISTEN6` / `SEND`（默认全是 `auto`）、`CERT_KEY_TYPE`（默认 `ec-256`）、`WARP_MODE`（默认 on，仅首次安装）、`CLOUD_URL` / `CLOUD_TOKEN`（顺带接入云控，仅首次安装）。
+
+### 6.2 标准安装脚本（install_v2bx_anytls.sh）的字段
+
+| 位置 | 字段 | 怎么填 |
+|---|---|---|
+| 参数 1 | API_HOST | 面板地址，如 `https://72v.net` |
+| 参数 2 | API_KEY | 该节点的面板密钥（每个节点不同） |
+| 参数 3 | NODE_ID | 面板里的节点 ID |
+| 参数 4 | DOMAIN | 证书域名（`hytron1.wukong.us.kg`）；写 `null` = 自签 |
+| 参数 5 | WARP_MODE | `on`/`off`，默认 on |
+| 参数 6/7/8 | 云控 URL / Token / insecure | 可选，接入云控中心 |
+| 交互询问 | 节点数量 / NodeID / 域名 / ListenIP / ListenIP6 / SendIP | 见下表 |
+
+| 交互字段 | 推荐填法 | 说明 |
+|---|---|---|
+| ListenIP | **直接回车**（域名已指向本机时默认 `auto`） | `auto` = 按该节点域名的 A 记录自动定地址；也可 `0.0.0.0` / `::` / 具体 IP |
+| ListenIP6 | **直接回车**（本机有公网 v6 时默认 `auto`） | `auto` = 本机空闲公网 v6 按节点固定分配；留空 = 不启用 v6 入口 |
+| SendIP | **直接回车**（默认 `auto`） | `auto` = 跟随监听地址 = 同进同出；也可输序号选具体 IP，`0` = 不绑定 |
+| 域名 | 该节点的落地域名 | 多节点的域名会自动合成**一张机器级证书** |
+
+### 6.3 安装后生成的 config.json 长什么样
+
+```json
+{
+  "Cert": { "CertMode": "http", "CertDomains": ["hytron1.wukong.us.kg", "hytron1-1.wukong.us.kg"],
+            "KeyType": "ec-256", "Email": "v2bx@github.com" },
+  "Nodes": [
+    { "NodeID": 37, "ListenIP": "auto", "ListenIP6": "auto", "SendIP": "auto",
+      "CertConfig": { "CertDomain": "hytron1.wukong.us.kg" } }
+  ]
+}
+```
+
+要点：**节点里不要再写 `CertMode`/`CertFile`/`KeyFile`**（写了就是显式覆盖机器证书）；`ListenIP=auto` 的前置条件是域名 A 记录已指向本机（否则 V2bX 启动时会明确报错，不会静默监听到错误地址）。
+
+### 6.4 云控 Agent 的配合
+
+- agent 仍按 NodeID 逐节点下发 `CertDomain`/`NodeType`/`ListenIP6`/`GoogleV4` 等；
+- 检测到机器级证书（config.json 有 `Cert` 块且证书文件存在）时，agent **不会再给节点写 `CertFile`/`KeyFile`**（否则单域名自签会顶掉机器证书），只更新 `CertDomain`，日志会打印「本机使用机器级证书…」；
+- 证书探测路径新增 `/etc/V2bX/cert/machine/fullchain.pem`，面板能正常显示机器证书的剩余天数与自签标记。
