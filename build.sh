@@ -39,8 +39,9 @@ echo "复制示例配置文件..."
 cd build
 cp ../geoip.dat .
 cp ../geosite.dat .
-cp ../example/geoip.db .
-cp ../example/geosite.db .
+# geoip.db / geosite.db 是旧版内核的遗留数据文件；精简构建仓库里没有时跳过
+[ -f ../example/geoip.db ] && cp ../example/geoip.db .
+[ -f ../example/geosite.db ] && cp ../example/geosite.db .
 cp ../example/config.json .
 cp ../example/custom_inbound.json .
 cp ../example/custom_outbound.json .
@@ -49,18 +50,23 @@ cp ../example/route.json .
 
 # 打包 amd64 版本
 echo "打包 amd64 版本..."
+EXTRA_FILES=""
+[ -f geoip.db ] && EXTRA_FILES="$EXTRA_FILES geoip.db"
+[ -f geosite.db ] && EXTRA_FILES="$EXTRA_FILES geosite.db"
 cp V2bX-amd64 V2bX
-zip -q V2bX-linux-64.zip V2bX geoip.dat geosite.dat geoip.db geosite.db config.json custom_inbound.json custom_outbound.json dns.json route.json
+# shellcheck disable=SC2086
+zip -q V2bX-linux-64.zip V2bX geoip.dat geosite.dat $EXTRA_FILES config.json custom_inbound.json custom_outbound.json dns.json route.json
 rm V2bX
 
 # 打包 arm64 版本
 echo "打包 arm64 版本..."
 cp V2bX-arm64 V2bX
-zip -q V2bX-linux-arm64-v8a.zip V2bX geoip.dat geosite.dat geoip.db geosite.db config.json custom_inbound.json custom_outbound.json dns.json route.json
+# shellcheck disable=SC2086
+zip -q V2bX-linux-arm64-v8a.zip V2bX geoip.dat geosite.dat $EXTRA_FILES config.json custom_inbound.json custom_outbound.json dns.json route.json
 rm V2bX
 
 # 清理临时文件
-rm geoip.dat geosite.dat geoip.db geosite.db config.json custom_inbound.json custom_outbound.json dns.json route.json
+rm -f geoip.dat geosite.dat geoip.db geosite.db config.json custom_inbound.json custom_outbound.json dns.json route.json
 
 cd ..
 
