@@ -30,3 +30,5 @@ node/cert/
 backups/
 cloud-data.json
 cloud-data.json.*
+
+project.md

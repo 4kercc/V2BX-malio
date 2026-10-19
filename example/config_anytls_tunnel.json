@@ -1,0 +1,49 @@
+{
+  "Log": {
+    "Level": "info",
+    "Output": ""
+  },
+  "Cores": [
+    {
+      "Type": "sing",
+      "Log": {
+        "Level": "info",
+        "Timestamp": true
+      }
+    }
+  ],
+  "Nodes": [
+    {
+      "Core": "sing",
+      "ApiConfig": {
+        "ApiHost": "https://your-panel.example.com",
+        "ApiKey": "your-mukey-here",
+        "NodeID": 1,
+        "NodeType": "anytls",
+        "Timeout": 30
+      },
+      "Options": {
+        "Name": "hk-anytls-tunnel",
+        "Core": "sing",
+        "ListenIP": "0.0.0.0",
+        "SendIP": "0.0.0.0",
+        "CertConfig": {
+          "CertMode": "none"
+        },
+        "SingOptions": {
+          "EnableTFO": true,
+          "EnableSniff": true
+        },
+        "TunnelConfig": {
+          "Enable": true,
+          "Type": "ws-tunnel",
+          "Password": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET",
+          "WSPath": "/tunnel",
+          "ListenPort": 0,
+          "AllowDirect": true,
+          "ProxyProtocol": true
+        }
+      }
+    }
+  ]
+}
