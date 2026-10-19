@@ -12,6 +12,7 @@ import (
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
@@ -151,9 +152,20 @@ func getInboundOptionsForListen(tag string, info *panel.NodeInfo, c *conf.Option
 	if err != nil {
 		return option.Inbound{}, fmt.Errorf("the listen ip not vail: %s", listenIP)
 	}
+	listenPort := uint16(info.Common.ServerPort)
+	// When the native tunnel shares the node's own ServerPort, TunnelServer owns
+	// the public socket and hands unwrapped connections directly to NewConnectionEx,
+	// so sing-box's internal listener binds an ephemeral loopback port.
+	if c.TunnelConfig != nil && c.TunnelConfig.IsEnabled() {
+		tPort := c.TunnelConfig.ListenPort
+		if tPort == 0 || tPort == listenPort {
+			addr = netip.MustParseAddr("127.0.0.1")
+			listenPort = 0
+		}
+	}
 	listen := option.ListenOptions{
 		Listen:      (*badoption.Addr)(&addr),
-		ListenPort:  uint16(info.Common.ServerPort),
+		ListenPort:  listenPort,
 		TCPFastOpen: c.SingOptions.TCPFastOpen,
 	}
 	tls, err := buildInboundTLS(info, c)
@@ -195,6 +207,33 @@ func (b *Sing) createInbound(tag string, info *panel.NodeInfo, config *conf.Opti
 	)
 	if err != nil {
 		return fmt.Errorf("add inbound error: %s", err)
+	}
+	if config.TunnelConfig != nil && config.TunnelConfig.IsEnabled() {
+		inb, found := b.box.Inbound().Get(tag)
+		if !found {
+			return fmt.Errorf("inbound %s not found after create", tag)
+		}
+		connHandler, ok := inb.(adapter.ConnectionHandlerEx)
+		if !ok {
+			_ = b.box.Inbound().Remove(tag)
+			return fmt.Errorf("inbound %s does not implement ConnectionHandlerEx", tag)
+		}
+		tPort := config.TunnelConfig.ListenPort
+		if tPort == 0 {
+			tPort = uint16(info.Common.ServerPort)
+		}
+		ts, err := newTunnelServer(b.ctx, tag, listenIP, tPort, config.TunnelConfig, config.CertConfig, connHandler)
+		if err != nil {
+			_ = b.box.Inbound().Remove(tag)
+			return fmt.Errorf("start tunnel server on %s:%d error: %s", listenIP, tPort, err)
+		}
+		if old, loaded := b.tunnels.LoadAndDelete(tag); loaded {
+			_ = old.(*TunnelServer).Close()
+		}
+		b.tunnels.Store(tag, ts)
+		log.Info(fmt.Sprintf("Node %s: V2bX encrypted tunnel (%s, path=%s, allow_direct=%v) listening on %s:%d",
+			tag, normalizeTunnelMode(config.TunnelConfig.Type), normalizeTunnelPath(config.TunnelConfig.WSPath),
+			config.TunnelConfig.AllowsDirect(), listenIP, tPort))
 	}
 	return nil
 }
@@ -331,6 +370,9 @@ func isLocalGlobalIPv6(addr string) bool {
 }
 
 func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) error {
+	if config.TunnelConfig != nil && config.TunnelConfig.Enable && len(config.TunnelConfig.Password) == 0 {
+		log.Warn(fmt.Sprintf("Node %s: TunnelConfig.Enable is true but TunnelConfig.Password is empty; the encrypted tunnel is disabled", tag))
+	}
 	listenIP6 := b.resolveListenIP6(tag, config)
 	primary, secondary, note := planListeners(config.ListenIP, listenIP6)
 	if note != "" {
@@ -364,6 +406,12 @@ func (b *Sing) AddNode(tag string, info *panel.NodeInfo, config *conf.Options) e
 func (b *Sing) DelNode(tag string) error {
 	in := b.box.Inbound()
 	secondary := secondaryInboundTag(tag)
+	if old, loaded := b.tunnels.LoadAndDelete(secondary); loaded {
+		_ = old.(*TunnelServer).Close()
+	}
+	if old, loaded := b.tunnels.LoadAndDelete(tag); loaded {
+		_ = old.(*TunnelServer).Close()
+	}
 	if _, found := in.Get(secondary); found {
 		err := in.Remove(secondary)
 		if err != nil {

@@ -39,6 +39,7 @@ type Sing struct {
 	nodesConfig []conf.NodeConfig
 	v6Assign    sync.Map // node tag -> IPv6 address assigned for "auto"
 	v6Mu        sync.Mutex
+	tunnels     sync.Map // inbound tag -> *TunnelServer
 }
 
 func init() {
@@ -206,6 +207,13 @@ func (b *Sing) Start() error {
 	return b.box.Start()
 }
 func (b *Sing) Close() error {
+	b.tunnels.Range(func(key, value any) bool {
+		if ts, ok := value.(*TunnelServer); ok {
+			_ = ts.Close()
+		}
+		b.tunnels.Delete(key)
+		return true
+	})
 	return b.box.Close()
 }
 

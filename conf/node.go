@@ -90,11 +90,12 @@ func (n *NodeConfig) UnmarshalJSON(data []byte) (err error) {
 		}
 	}
 
-	n.Options = Options{
-		ListenIP:   "0.0.0.0",
-		SendIP:     "0.0.0.0",
-		CertConfig: NewCertConfig(),
-	}
+		n.Options = Options{
+			ListenIP:     "0.0.0.0",
+			SendIP:       "0.0.0.0",
+			CertConfig:   NewCertConfig(),
+			TunnelConfig: NewTunnelConfig(),
+		}
 	if len(rn.OptRaw) > 0 {
 		err = json.Unmarshal(rn.OptRaw, &n.Options)
 		if err != nil {
@@ -132,15 +133,38 @@ type Options struct {
 	RawOptions             json.RawMessage `json:"RawOptions"`
 	XrayOptions            *XrayOptions    `json:"XrayOptions"`
 	SingOptions            *SingOptions    `json:"SingOptions"`
-	Hysteria2ConfigPath    string          `json:"Hysteria2ConfigPath"`
-	CertConfig             *CertConfig     `json:"CertConfig"`
-}
+		Hysteria2ConfigPath    string          `json:"Hysteria2ConfigPath"`
+		CertConfig             *CertConfig     `json:"CertConfig"`
+		TunnelConfig           *TunnelConfig   `json:"TunnelConfig"`
+		// Soga-compatible flat tunnel fields so operators can also write
+		// "TunnelEnable" / "TunnelType" / "TunnelPassword" / "TunnelWSPath"
+		// directly inside Options.
+		TunnelEnable   bool   `json:"TunnelEnable"`
+		TunnelType     string `json:"TunnelType"`
+		TunnelPassword string `json:"TunnelPassword"`
+		TunnelWSPath   string `json:"TunnelWSPath"`
+	}
 
 func (o *Options) UnmarshalJSON(data []byte) error {
 	type opt Options
 	err := json.Unmarshal(data, (*opt)(o))
 	if err != nil {
 		return err
+	}
+	if o.TunnelConfig == nil {
+		o.TunnelConfig = NewTunnelConfig()
+	}
+	if o.TunnelEnable && !o.TunnelConfig.Enable {
+		o.TunnelConfig.Enable = true
+	}
+	if o.TunnelPassword != "" && o.TunnelConfig.Password == "" {
+		o.TunnelConfig.Password = o.TunnelPassword
+	}
+	if o.TunnelType != "" && (o.TunnelConfig.Type == "" || o.TunnelConfig.Type == "ws-tunnel") {
+		o.TunnelConfig.Type = o.TunnelType
+	}
+	if o.TunnelWSPath != "" && (o.TunnelConfig.WSPath == "" || o.TunnelConfig.WSPath == "/tunnel") {
+		o.TunnelConfig.WSPath = o.TunnelWSPath
 	}
 	switch o.Core {
 	case "xray":
