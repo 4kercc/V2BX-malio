@@ -31,7 +31,7 @@ async function main() {
       proxy_protocol: true,
       tunnel_password: password,
       tunnel_type: protocol,
-      tunnel_ws_path: '/tunnel',
+      tunnel_ws_path: '/ws',
       speed_limit: 0,
       connection_limit: 0,
       ip_limit: 0,

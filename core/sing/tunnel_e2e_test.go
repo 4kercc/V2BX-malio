@@ -57,7 +57,7 @@ func newTestTunnelServer(t *testing.T, mode, password string, handler adapter.Co
 		Enable:        true,
 		Type:          mode,
 		Password:      password,
-		WSPath:        "/tunnel",
+		WSPath:        "/ws",
 		AllowDirect:   &allowDirect,
 		ProxyProtocol: &proxyProto,
 	}
@@ -250,12 +250,12 @@ func TestV2bXTunnelRejectsWrongPassword(t *testing.T) {
 	}
 }
 
-func TestV2bXTunnelDirectAnyTLSPassthrough(t *testing.T) {
+func TestV2bXTunnelWSDirectAnyTLSPassthrough(t *testing.T) {
 	h := &echoHandler{first: make(chan []byte, 1)}
-	_, port := newTestTunnelServer(t, "tls", "direct-password", h)
+	_, port := newTestTunnelServer(t, "ws", "direct-password", h)
 
-	// A direct AnyTLS client does a TLS handshake without the v2bx-tunnel ALPN.
-	// The tunnel server must hand the untouched ClientHello to the inner inbound.
+	// In ws mode (no outer TLS) a TLS ClientHello is a direct AnyTLS client:
+	// the tunnel server must hand it to the inner inbound untouched.
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
 	raw, err := dialer.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -272,5 +272,59 @@ func TestV2bXTunnelDirectAnyTLSPassthrough(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("direct TLS connection was not dispatched to the inner inbound")
+	}
+}
+
+// TestV2bXTunnelTLSStandardALPN makes sure the outer TLS only negotiates a
+// standard ALPN (the old custom "v2bx-tunnel" marker was a ClientHello
+// fingerprint).
+func TestV2bXTunnelTLSStandardALPN(t *testing.T) {
+	h := &echoHandler{}
+	_, port := newTestTunnelServer(t, "wss", "alpn-password", h)
+
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	raw, err := dialer.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	client := tls.Client(raw, &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h2", "http/1.1"},
+	})
+	if err := client.Handshake(); err != nil {
+		t.Fatalf("outer TLS handshake: %v", err)
+	}
+	if got := client.ConnectionState().NegotiatedProtocol; got != "http/1.1" {
+		t.Fatalf("expected standard ALPN http/1.1, got %q", got)
+	}
+}
+
+// TestV2bXTunnelTLSHTTPProbe checks that a plain HTTPS probe against a tls-mode
+// tunnel port gets an ordinary 404 response instead of a bare reset.
+func TestV2bXTunnelTLSHTTPProbe(t *testing.T) {
+	h := &echoHandler{}
+	_, port := newTestTunnelServer(t, "tls", "probe-password", h)
+
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	raw, err := dialer.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	client := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"http/1.1"}})
+	if err := client.Handshake(); err != nil {
+		t.Fatalf("outer TLS handshake: %v", err)
+	}
+	if _, err := client.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, err := io.ReadAll(client)
+	if err != nil {
+		t.Fatalf("read probe response: %v", err)
+	}
+	if !strings.Contains(string(resp), "404 page not found") {
+		t.Fatalf("expected the stock 404 page, got %q", string(resp))
 	}
 }

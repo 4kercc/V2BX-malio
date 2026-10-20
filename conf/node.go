@@ -163,7 +163,7 @@ func (o *Options) UnmarshalJSON(data []byte) error {
 	if o.TunnelType != "" && (o.TunnelConfig.Type == "" || o.TunnelConfig.Type == "ws-tunnel") {
 		o.TunnelConfig.Type = o.TunnelType
 	}
-	if o.TunnelWSPath != "" && (o.TunnelConfig.WSPath == "" || o.TunnelConfig.WSPath == "/tunnel") {
+	if o.TunnelWSPath != "" && (o.TunnelConfig.WSPath == "" || o.TunnelConfig.WSPath == "/ws" || o.TunnelConfig.WSPath == "/tunnel") {
 		o.TunnelConfig.WSPath = o.TunnelWSPath
 	}
 	switch o.Core {

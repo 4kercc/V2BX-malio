@@ -42,8 +42,15 @@ const (
 	tunnelMaxPayload     = 16384
 	tunnelMaxTimeSkewSec = 300
 	tunnelFlagProxyV2    = 0x01
-	tunnelALPN           = "v2bx-tunnel"
-	wsGUID               = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	// tunnelNextProto is a standard ALPN value: the outer TLS ClientHello must not
+	// carry a product-specific marker (a custom "v2bx-tunnel" ALPN is trivially
+	// fingerprinted). Tunnel traffic is recognised after the handshake — by the WS
+	// path in wss mode, or by the AEAD handshake itself (VT01) in tls mode.
+	tunnelNextProto = "http/1.1"
+	wsGUID          = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+	// tunnelDefaultWSPath looks like an ordinary WebSocket endpoint rather than a
+	// distinctive one.
+	tunnelDefaultWSPath = "/ws"
 )
 
 var (
@@ -53,6 +60,25 @@ var (
 	tunnelInfoS2C = []byte("v2bx-tunnel-v1-s2c\x01")
 	pp2Sig        = []byte{0x0d, 0x0a, 0x0d, 0x0a, 0x00, 0x0d, 0x0a, 0x51, 0x55, 0x49, 0x54, 0x0a}
 )
+
+// httpNotFoundResponse is the stock Go http.NotFound body, used both for
+// non-matching WS paths and for plain HTTPS probes on a tls-mode tunnel port:
+// the endpoint answers like an ordinary web server instead of resetting.
+const httpNotFoundResponse = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nConnection: close\r\n\r\n404 page not found\n"
+
+// looksLikeHTTPRequest reports whether the first four bytes start an HTTP
+// request line. Used after the outer TLS handshake to spot browser/probe
+// traffic (the tunnel's first bytes are a random 16-byte salt instead).
+func looksLikeHTTPRequest(head []byte) bool {
+	if len(head) < 4 {
+		return false
+	}
+	switch string(head[:4]) {
+	case "GET ", "POST", "HEAD", "PUT ", "OPTI", "PRI ", "DELE", "PATC", "CONN", "TRAC":
+		return true
+	}
+	return false
+}
 
 // deriveTunnelKeys derives 16-byte AES-128-GCM keys for client->server and
 // server->client using RFC 5869 HKDF-SHA256 (matching nyanpass v2bx_tunnel.js).
@@ -460,7 +486,10 @@ func buildTunnelTLSConfig(certCfg *conf.CertConfig) (*stdtls.Config, error) {
 	}
 	return &stdtls.Config{
 		Certificates: []stdtls.Certificate{cert},
-		NextProtos:   []string{tunnelALPN, "http/1.1"},
+		// Only standard ALPN values: the ClientHello/ServerHello must look like an
+		// ordinary HTTPS endpoint. HTTP/1.1 is what our WS client speaks, so the
+		// server does not advertise h2 (which it cannot serve).
+		NextProtos: []string{tunnelNextProto},
 	}, nil
 }
 
@@ -519,6 +548,9 @@ func newTunnelServer(
 			_ = ln.Close()
 			return nil, fmt.Errorf("build tunnel tls config: %w", err)
 		}
+		if cfg.AllowsDirect() {
+			log.Warn(fmt.Sprintf("Node %s: tunnel mode %s terminates the outer TLS on this port; plain AnyTLS clients cannot share it (AllowDirect is honoured in ws mode only)", tag, mode))
+		}
 	}
 	s := &TunnelServer{
 		ctx:        ctx,
@@ -549,7 +581,7 @@ func normalizeTunnelMode(t string) string {
 func normalizeTunnelPath(p string) string {
 	s := strings.TrimSpace(p)
 	if s == "" {
-		return "/tunnel"
+		return tunnelDefaultWSPath
 	}
 	if !strings.HasPrefix(s, "/") {
 		return "/" + s
@@ -576,90 +608,6 @@ func (s *TunnelServer) acceptLoop() {
 		}
 		go s.handleConn(conn)
 	}
-}
-
-// clientHelloOffersALPN peeks at a TLS ClientHello record without consuming it
-// and reports whether the ALPN extension advertises want.
-func clientHelloOffersALPN(br *bufio.Reader, want string) (bool, error) {
-	hdr, err := br.Peek(5)
-	if err != nil {
-		return false, err
-	}
-	if hdr[0] != 0x16 {
-		return false, errors.New("not a TLS handshake record")
-	}
-	recordLen := int(binary.BigEndian.Uint16(hdr[3:5]))
-	if recordLen < 4 || recordLen > 65535 {
-		return false, errors.New("invalid TLS record length")
-	}
-	full, err := br.Peek(5 + recordLen)
-	if err != nil {
-		return false, err
-	}
-	data := full[5:]
-	if data[0] != 0x01 { // ClientHello
-		return false, errors.New("not a client hello")
-	}
-	p := 4 // handshake type(1) + length(3)
-	if len(data) < p+2+32+1 {
-		return false, errors.New("client hello too short")
-	}
-	p += 2 + 32 // version + random
-	sessionLen := int(data[p])
-	p += 1 + sessionLen
-	if len(data) < p+2 {
-		return false, errors.New("client hello truncated (cipher suites)")
-	}
-	cipherLen := int(binary.BigEndian.Uint16(data[p : p+2]))
-	p += 2 + cipherLen
-	if len(data) < p+1 {
-		return false, errors.New("client hello truncated (compression)")
-	}
-	compLen := int(data[p])
-	p += 1 + compLen
-	if len(data) < p+2 {
-		return false, nil // no extensions
-	}
-	extTotal := int(binary.BigEndian.Uint16(data[p : p+2]))
-	p += 2
-	end := p + extTotal
-	if end > len(data) {
-		end = len(data)
-	}
-	for p+4 <= end {
-		extType := binary.BigEndian.Uint16(data[p : p+2])
-		extLen := int(binary.BigEndian.Uint16(data[p+2 : p+4]))
-		p += 4
-		if p+extLen > end {
-			break
-		}
-		if extType == 0x0010 { // ALPN
-			alpn := data[p : p+extLen]
-			if len(alpn) < 2 {
-				return false, nil
-			}
-			listLen := int(binary.BigEndian.Uint16(alpn[0:2]))
-			q := 2
-			listEnd := 2 + listLen
-			if listEnd > len(alpn) {
-				listEnd = len(alpn)
-			}
-			for q < listEnd {
-				l := int(alpn[q])
-				q++
-				if q+l > listEnd {
-					break
-				}
-				if string(alpn[q:q+l]) == want {
-					return true, nil
-				}
-				q += l
-			}
-			return false, nil
-		}
-		p += extLen
-	}
-	return false, nil
 }
 
 func (s *TunnelServer) handleConn(rawConn net.Conn) {
@@ -701,27 +649,19 @@ func (s *TunnelServer) handleConn(rawConn net.Conn) {
 			return
 		}
 
-		// In TLS/WSS mode the tunnel client advertises the v2bx-tunnel ALPN. When
-		// direct clients are allowed, a ClientHello without it is handed to the
-		// inner AnyTLS TLS server untouched (zero-copy, no outer handshake).
-		if s.cfg.AllowsDirect() {
-			offers, alpnErr := clientHelloOffersALPN(br, tunnelALPN)
-			if alpnErr == nil && !offers {
-				_ = rawConn.SetDeadline(time.Time{})
-				s.dispatchToAnyTLS(rewound, M.SocksaddrFromNet(rawConn.RemoteAddr()).Unwrap(), M.SocksaddrFromNet(rawConn.LocalAddr()).Unwrap())
-				return
-			}
-		}
-
-		// Perform outer TLS handshake for tunnel traffic
+		// tls / wss mode: the outer TLS is terminated here and the AEAD handshake
+		// authenticates the peer. No ALPN marker is used to tell tunnel traffic from
+		// direct traffic — the ClientHello carries only standard ALPN (http/1.1),
+		// so it is indistinguishable from an ordinary HTTPS client. Direct AnyTLS
+		// coexistence is therefore supported in ws mode only (AllowDirect).
 		tlsConn := stdtls.Server(rewound, s.tlsConf)
 		if err := tlsConn.Handshake(); err != nil {
 			log.Warn(fmt.Sprintf("Node %s: tunnel outer TLS handshake failed from %s (mode=%s): %s", s.tag, rawConn.RemoteAddr(), mode, err))
 			_ = tlsConn.Close()
 			return
 		}
+		tlsBr := bufio.NewReaderSize(tlsConn, 4096)
 		if mode == "wss" {
-			tlsBr := bufio.NewReaderSize(tlsConn, 4096)
 			wsConn, ok := s.upgradeWebSocket(tlsConn, tlsBr)
 			if !ok {
 				return
@@ -729,7 +669,20 @@ func (s *TunnelServer) handleConn(rawConn net.Conn) {
 			s.serveEncryptedTunnel(wsConn, rawConn)
 			return
 		}
-		s.serveEncryptedTunnel(tlsConn, rawConn)
+		// tls mode: answer plain HTTPS probes with a normal 404 page so that the
+		// port behaves like an ordinary web server instead of resetting the socket.
+		head, err := tlsBr.Peek(4)
+		if err != nil {
+			_ = tlsConn.Close()
+			return
+		}
+		if looksLikeHTTPRequest(head) {
+			_ = rawConn.SetDeadline(time.Now().Add(3 * time.Second))
+			_, _ = writeFull(tlsConn, []byte(httpNotFoundResponse))
+			_ = tlsConn.Close()
+			return
+		}
+		s.serveEncryptedTunnel(newRewindConn(tlsConn, tlsBr), rawConn)
 		return
 	}
 
@@ -754,8 +707,7 @@ func (s *TunnelServer) upgradeWebSocket(conn net.Conn, br *bufio.Reader) (net.Co
 		req.URL.Path != wantPath ||
 		!strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		// Mirror soga_tunnel behavior: non-matching HTTP probes get standard 404
-		resp := "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 19\r\nConnection: close\r\n\r\n404 page not found\n"
-		_, _ = conn.Write([]byte(resp))
+		_, _ = conn.Write([]byte(httpNotFoundResponse))
 		_ = conn.Close()
 		return nil, false
 	}

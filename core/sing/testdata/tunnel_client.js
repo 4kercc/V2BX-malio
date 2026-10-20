@@ -27,7 +27,7 @@ async function main() {
       port,
       protocol,
       password,
-      wsPath: '/tunnel',
+      wsPath: '/ws',
       sni: host,
       insecure: true,
       clientInfo: {

@@ -10,10 +10,14 @@ type TunnelConfig struct {
 	Enable        bool   `json:"Enable"`
 	Type          string `json:"Type"`          // "ws" / "ws-tunnel" / "tls" / "tls-tunnel" / "wss" / "ws-tls-tunnel"
 	Password      string `json:"Password"`      // shared tunnel password for HKDF-SHA256 + AES-128-GCM
-	WSPath        string `json:"WSPath"`        // WebSocket path (default "/tunnel")
+	WSPath        string `json:"WSPath"`        // WebSocket path (default "/ws")
 	ListenPort    uint16 `json:"ListenPort"`    // 0 = share the node's own ServerPort
-	AllowDirect   *bool  `json:"AllowDirect"`   // nil/true = allow direct AnyTLS clients on the same port alongside tunnel
-	ProxyProtocol *bool  `json:"ProxyProtocol"` // nil/true = accept inner PROXY v2 header for real client IP
+	// AllowDirect: nil/true = also accept plain AnyTLS clients on this port.
+	// Only honoured in "ws" mode (no outer TLS). In tls/wss modes the outer TLS is
+	// always terminated here and the custom ALPN marker that used to separate
+	// tunnel from direct traffic has been removed (it was a ClientHello fingerprint).
+	AllowDirect   *bool `json:"AllowDirect"`
+	ProxyProtocol *bool `json:"ProxyProtocol"` // nil/true = accept inner PROXY v2 header for real client IP
 }
 
 func NewTunnelConfig() *TunnelConfig {
@@ -22,7 +26,7 @@ func NewTunnelConfig() *TunnelConfig {
 	return &TunnelConfig{
 		Enable:        false,
 		Type:          "ws-tunnel",
-		WSPath:        "/tunnel",
+		WSPath:        "/ws",
 		AllowDirect:   &allowDirect,
 		ProxyProtocol: &proxyProto,
 	}

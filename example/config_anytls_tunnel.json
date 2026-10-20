@@ -38,7 +38,7 @@
           "Enable": true,
           "Type": "ws-tunnel",
           "Password": "CHANGE_ME_TO_A_LONG_RANDOM_SECRET",
-          "WSPath": "/tunnel",
+          "WSPath": "/ws",
           "ListenPort": 0,
           "AllowDirect": true,
           "ProxyProtocol": true
