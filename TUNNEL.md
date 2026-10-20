@@ -1,6 +1,6 @@
 # V2bX 原生加密隧道（V2bX Native Encrypted Tunnel）
 
-版本：v1.4.1 · 兼容端：nyanpass `impl/lib/v2bx_tunnel.js`
+版本：v1.4.2 · 兼容端：nyanpass `impl/lib/v2bx_tunnel.js`
 
 在不增加独立出口服务器的前提下，让 nyanpass 入口直接与落地 V2bX 建立一条
 **带密码认证的加密隧道**，在 AnyTLS 之前再加一层 AEAD 加密，并把真实客户端 IP
@@ -73,7 +73,7 @@ sing-box 的 AnyTLS 入站改绑 `127.0.0.1:0`（仅内部使用），对外端�
 
 | 位置 | 旧行为（可被识别） | 现在的行为 |
 | --- | --- | --- |
-| 外层 TLS ALPN | 客户端 ClientHello 里带自定义 `v2bx-tunnel` | **只协商标准 `http/1.1`**（服务端也只宣告 `http/1.1`），ClientHello 与普通 HTTPS 客户端一致 |
+| 外层 TLS ALPN | 客户端 ClientHello 里带自定义 `v2bx-tunnel` | **客户端只发标准 ALPN**（`h2`/`http/1.1`）；服务端协商结果落在 `http/1.1`。服务端仅为 v1.4.1 之前的老客户端保留旧 token 作为兜底——它不出现在任何一方的 ClientHello 里，等入口全部升级后可删除 |
 | 隧道/直连区分 | 靠 ALPN 标记 | `ws` 模式靠首字节（HTTP vs TLS）；`tls/wss` 模式端口专用，靠 WS 路径 / AEAD 握手（`VT01`）自身 |
 | WS 路径 | `/tunnel` | 默认 `/ws`（可配成任意常见路径，如 `/api/ws`、`/socket`） |
 | 握手头 | 无 UA、只有最小几个头 | 客户端发送浏览器风格 `User-Agent` / `Accept` / `Accept-Language` / `Cache-Control` / `Pragma` / `Origin` / `Sec-WebSocket-Extensions` |

@@ -300,6 +300,42 @@ func TestV2bXTunnelTLSStandardALPN(t *testing.T) {
 	}
 }
 
+// TestV2bXTunnelTLSLegacyALPNCompat keeps pre-v1.4.2 upstream clients working.
+// They offer ["v2bx-tunnel", "http/1.1"]; Go negotiates by the server's order,
+// so the handshake lands on http/1.1 (the old client never inspects the
+// result). A client offering only the legacy token is also accepted.
+func TestV2bXTunnelTLSLegacyALPNCompat(t *testing.T) {
+	h := &echoHandler{}
+	_, port := newTestTunnelServer(t, "wss", "legacy-password", h)
+
+	cases := []struct {
+		name   string
+		protos []string
+		want   string
+	}{
+		{"legacy client (v2bx-tunnel + http/1.1)", []string{"v2bx-tunnel", "http/1.1"}, "http/1.1"},
+		{"legacy-only client", []string{"v2bx-tunnel"}, "v2bx-tunnel"},
+		{"updated client (h2 + http/1.1)", []string{"h2", "http/1.1"}, "http/1.1"},
+	}
+	for _, tc := range cases {
+		dialer := &net.Dialer{Timeout: 2 * time.Second}
+		raw, err := dialer.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		client := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, NextProtos: tc.protos})
+		if err := client.Handshake(); err != nil {
+			raw.Close()
+			t.Fatalf("%s: handshake failed: %v", tc.name, err)
+		}
+		if got := client.ConnectionState().NegotiatedProtocol; got != tc.want {
+			raw.Close()
+			t.Fatalf("%s: negotiated %q, want %q", tc.name, got, tc.want)
+		}
+		raw.Close()
+	}
+}
+
 // TestV2bXTunnelTLSHTTPProbe checks that a plain HTTPS probe against a tls-mode
 // tunnel port gets an ordinary 404 response instead of a bare reset.
 func TestV2bXTunnelTLSHTTPProbe(t *testing.T) {

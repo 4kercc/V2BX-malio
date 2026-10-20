@@ -47,6 +47,12 @@ const (
 	// fingerprinted). Tunnel traffic is recognised after the handshake — by the WS
 	// path in wss mode, or by the AEAD handshake itself (VT01) in tls mode.
 	tunnelNextProto = "http/1.1"
+	// tunnelLegacyALPN is accepted only for upstream clients deployed before
+	// v1.4.2 (they offer "v2bx-tunnel"). The server never advertises its ALPN
+	// list to clients (TLS 1.3 keeps the selection encrypted), and the current
+	// client never sends this value, so it adds no observable fingerprint to
+	// either side's ClientHello. Remove once every entry runs v1.4.2+.
+	tunnelLegacyALPN = "v2bx-tunnel"
 	wsGUID          = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 	// tunnelDefaultWSPath looks like an ordinary WebSocket endpoint rather than a
 	// distinctive one.
@@ -486,10 +492,12 @@ func buildTunnelTLSConfig(certCfg *conf.CertConfig) (*stdtls.Config, error) {
 	}
 	return &stdtls.Config{
 		Certificates: []stdtls.Certificate{cert},
-		// Only standard ALPN values: the ClientHello/ServerHello must look like an
-		// ordinary HTTPS endpoint. HTTP/1.1 is what our WS client speaks, so the
-		// server does not advertise h2 (which it cannot serve).
-		NextProtos: []string{tunnelNextProto},
+		// Only standard ALPN values are advertised: an ordinary HTTPS endpoint.
+		// HTTP/1.1 is what our WS client speaks, so the server does not advertise
+		// h2 (which it cannot serve). The legacy token is accepted for old
+		// upstream clients only; Go negotiates by the client's preference order,
+		// so updated clients (h2+http/1.1) still land on http/1.1.
+		NextProtos: []string{tunnelNextProto, tunnelLegacyALPN},
 	}, nil
 }
 
@@ -659,6 +667,9 @@ func (s *TunnelServer) handleConn(rawConn net.Conn) {
 			log.Warn(fmt.Sprintf("Node %s: tunnel outer TLS handshake failed from %s (mode=%s): %s", s.tag, rawConn.RemoteAddr(), mode, err))
 			_ = tlsConn.Close()
 			return
+		}
+		if proto := tlsConn.ConnectionState().NegotiatedProtocol; proto == tunnelLegacyALPN {
+			log.Warn(fmt.Sprintf("Node %s: legacy %q ALPN from %s — upstream client predates v1.4.2, please update it", s.tag, tunnelLegacyALPN, rawConn.RemoteAddr()))
 		}
 		tlsBr := bufio.NewReaderSize(tlsConn, 4096)
 		if mode == "wss" {
