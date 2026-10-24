@@ -2,9 +2,13 @@
 
 set -e
 
+# 构建环境要求：Go >= 1.27（go.mod 的 go 1.27；github.com/xtls/reality 2026-10 版要求）
+# 依赖说明：go.mod 用 replace 指向 third_party/sing-box_mod 与 third_party/reality（本地补丁版），
+# 二者必须随源码一起分发，否则构建会去拉上游未打补丁的版本（Reality 会不可用）。
+
 # 版本号：可通过第一个参数指定，如 ./build.sh v1.0.9；默认用 git tag 或 dev
 VERSION="${1:-$(git describe --tags --abbrev=0 2>/dev/null || echo dev)}"
-echo "开始构建 V2bX ${VERSION}（AnyTLS-only 精简版，sing-box 内核）..."
+echo "开始构建 V2bX ${VERSION}（AnyTLS + VLESS/Reality 等，sing-box 内核）..."
 
 LDFLAGS="-s -w -X 'github.com/InazumaV/V2bX/cmd.version=${VERSION}'"
 # sing-only：不含 xray/hysteria2/quic/dhcp/clash-api
