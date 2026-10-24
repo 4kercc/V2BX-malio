@@ -320,3 +320,5 @@ replace github.com/sagernet/sing-box v1.12.0 => ./third_party/sing-box_mod
 replace golang.org/x/net => golang.org/x/net v0.41.0
 
 replace github.com/xtls/reality => ./third_party/reality
+
+replace github.com/wyx2685/sing-vmess => ./third_party/sing-vmess
