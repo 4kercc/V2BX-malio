@@ -1,24 +1,26 @@
 package sing
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/pem"
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/InazumaV/V2bX/api/panel"
 	"github.com/InazumaV/V2bX/conf"
+	"github.com/goccy/go-json"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/json/badoption"
 )
-
-// This build is trimmed to AnyTLS only (sing-box core).
 
 // buildECHKeyPEM normalizes an ECH key set into the PEM block sing-box expects
 // for inbound ECH (label "ECH KEYS"). Accepts either a complete PEM (passed
@@ -85,11 +87,73 @@ func normalizeDomainValue(raw string) string {
 	return strings.ToLower(value)
 }
 
-// buildInboundTLS assembles the inbound TLS options for an AnyTLS node from the
-// panel node info and local CertConfig. The certificate domain, not the panel
-// server_name masquerade value, drives the inbound TLS server name.
+type HttpNetworkConfig struct {
+	Header struct {
+		Type     string           `json:"type"`
+		Request  *json.RawMessage `json:"request"`
+		Response *json.RawMessage `json:"response"`
+	} `json:"header"`
+}
+
+type HttpRequest struct {
+	Version string   `json:"version"`
+	Method  string   `json:"method"`
+	Path    []string `json:"path"`
+	Headers struct {
+		Host []string `json:"Host"`
+	} `json:"headers"`
+}
+
+type WsNetworkConfig struct {
+	Path    string            `json:"path"`
+	Headers map[string]string `json:"headers"`
+}
+
+type GrpcNetworkConfig struct {
+	ServiceName string `json:"serviceName"`
+}
+
+type HttpupgradeNetworkConfig struct {
+	Path string `json:"path"`
+	Host string `json:"host"`
+}
+
+// buildInboundTLS assembles the inbound TLS options for a node.
+//   - VLESS-Reality nodes build the sing-box Reality options from the panel
+//     TlsSettings/RealityConfig; no certificate is needed.
+//   - AnyTLS nodes use the panel certificate chain handled by the local cert
+//     machine below; the certificate domain, not the panel server_name
+//     masquerade value, drives the inbound TLS server name.
 func buildInboundTLS(info *panel.NodeInfo, c *conf.Options) (option.InboundTLSOptions, error) {
 	var tls option.InboundTLSOptions
+	if info.Security == panel.Reality {
+		v := info.VAllss
+		if v == nil {
+			return tls, fmt.Errorf("reality node is missing VLESS config")
+		}
+		tls.Enabled = true
+		tls.ServerName = v.TlsSettings.ServerName
+		port, _ := strconv.Atoi(v.TlsSettings.ServerPort)
+		dest := v.TlsSettings.Dest
+		if dest == "" {
+			dest = tls.ServerName
+		}
+		mtd, _ := time.ParseDuration(v.RealityConfig.MaxTimeDiff)
+		tls.Reality = &option.InboundRealityOptions{
+			Enabled:    true,
+			ShortID:    []string{v.TlsSettings.ShortId},
+			PrivateKey: v.TlsSettings.PrivateKey,
+			Xver:       uint8(v.TlsSettings.Xver),
+			Handshake: option.InboundRealityHandshakeOptions{
+				ServerOptions: option.ServerOptions{
+					Server:     dest,
+					ServerPort: uint16(port),
+				},
+			},
+			MaxTimeDifference: badoption.Duration(mtd),
+		}
+		return tls, nil
+	}
 	if info.Security != panel.Tls {
 		return tls, nil
 	}
@@ -168,6 +232,19 @@ func getInboundOptionsForListen(tag string, info *panel.NodeInfo, c *conf.Option
 		ListenPort:  listenPort,
 		TCPFastOpen: c.SingOptions.TCPFastOpen,
 	}
+	var multiplex *option.InboundMultiplexOptions
+	if c.SingOptions.Multiplex != nil {
+		multiplexOption := option.InboundMultiplexOptions{
+			Enabled: c.SingOptions.Multiplex.Enabled,
+			Padding: c.SingOptions.Multiplex.Padding,
+			Brutal: &option.BrutalOptions{
+				Enabled:  c.SingOptions.Multiplex.Brutal.Enabled,
+				UpMbps:   c.SingOptions.Multiplex.Brutal.UpMbps,
+				DownMbps: c.SingOptions.Multiplex.Brutal.DownMbps,
+			},
+		}
+		multiplex = &multiplexOption
+	}
 	tls, err := buildInboundTLS(info, c)
 	if err != nil {
 		return option.Inbound{}, err
@@ -185,8 +262,271 @@ func getInboundOptionsForListen(tag string, info *panel.NodeInfo, c *conf.Option
 				TLS: &tls,
 			},
 		}
+	case "vmess", "vless":
+		n := info.VAllss
+		t := option.V2RayTransportOptions{
+			Type: n.Network,
+		}
+		switch n.Network {
+		case "tcp":
+			if len(n.NetworkSettings) != 0 {
+				network := HttpNetworkConfig{}
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+				//Todo fix http options
+				if network.Header.Type == "http" {
+					t.Type = network.Header.Type
+					var request HttpRequest
+					if network.Header.Request != nil {
+						err = json.Unmarshal(*network.Header.Request, &request)
+						if err != nil {
+							return option.Inbound{}, fmt.Errorf("decode HttpRequest error: %s", err)
+						}
+						t.HTTPOptions.Host = request.Headers.Host
+						t.HTTPOptions.Path = request.Path[0]
+						t.HTTPOptions.Method = request.Method
+					}
+				} else {
+					t.Type = ""
+				}
+			} else {
+				t.Type = ""
+			}
+		case "ws":
+			var (
+				path    string
+				ed      int
+				headers map[string]badoption.Listable[string]
+			)
+			if len(n.NetworkSettings) != 0 {
+				network := WsNetworkConfig{}
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+				var u *url.URL
+				u, err = url.Parse(network.Path)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("parse path error: %s", err)
+				}
+				path = u.Path
+				ed, _ = strconv.Atoi(u.Query().Get("ed"))
+				headers = make(map[string]badoption.Listable[string], len(network.Headers))
+				for k, v := range network.Headers {
+					headers[k] = badoption.Listable[string]{
+						v,
+					}
+				}
+			}
+			t.WebsocketOptions = option.V2RayWebsocketOptions{
+				Path:                path,
+				EarlyDataHeaderName: "Sec-WebSocket-Protocol",
+				MaxEarlyData:        uint32(ed),
+				Headers:             headers,
+			}
+		case "grpc":
+			network := GrpcNetworkConfig{}
+			if len(n.NetworkSettings) != 0 {
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+			}
+			t.GRPCOptions = option.V2RayGRPCOptions{
+				ServiceName: network.ServiceName,
+			}
+		case "httpupgrade":
+			network := HttpupgradeNetworkConfig{}
+			if len(n.NetworkSettings) != 0 {
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+			}
+			t.HTTPUpgradeOptions = option.V2RayHTTPUpgradeOptions{
+				Path: network.Path,
+				Host: network.Host,
+			}
+		}
+		if info.Type == "vless" {
+			in.Type = "vless"
+			in.Options = &option.VLESSInboundOptions{
+				ListenOptions: listen,
+				InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+					TLS: &tls,
+				},
+				Transport: &t,
+				Multiplex: multiplex,
+			}
+		} else {
+			in.Type = "vmess"
+			in.Options = &option.VMessInboundOptions{
+				ListenOptions: listen,
+				InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+					TLS: &tls,
+				},
+				Transport: &t,
+				Multiplex: multiplex,
+			}
+		}
+	case "shadowsocks":
+		in.Type = "shadowsocks"
+		n := info.Shadowsocks
+		var keyLength int
+		switch n.Cipher {
+		case "2022-blake3-aes-128-gcm":
+			keyLength = 16
+		case "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305":
+			keyLength = 32
+		default:
+			keyLength = 16
+		}
+		ssoption := &option.ShadowsocksInboundOptions{
+			ListenOptions: listen,
+			Method:        n.Cipher,
+			Multiplex:     multiplex,
+		}
+		p := make([]byte, keyLength)
+		_, _ = rand.Read(p)
+		randomPasswd := string(p)
+		if strings.Contains(n.Cipher, "2022") {
+			ssoption.Password = n.ServerKey
+			randomPasswd = base64.StdEncoding.EncodeToString([]byte(randomPasswd))
+		}
+		ssoption.Users = []option.ShadowsocksUser{{
+			Password: randomPasswd,
+		}}
+		in.Options = ssoption
+	case "trojan":
+		n := info.Trojan
+		t := option.V2RayTransportOptions{
+			Type: n.Network,
+		}
+		switch n.Network {
+		case "tcp":
+			t.Type = ""
+		case "ws":
+			var (
+				path    string
+				ed      int
+				headers map[string]badoption.Listable[string]
+			)
+			if len(n.NetworkSettings) != 0 {
+				network := WsNetworkConfig{}
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+				var u *url.URL
+				u, err = url.Parse(network.Path)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("parse path error: %s", err)
+				}
+				path = u.Path
+				ed, _ = strconv.Atoi(u.Query().Get("ed"))
+				headers = make(map[string]badoption.Listable[string], len(network.Headers))
+				for k, v := range network.Headers {
+					headers[k] = badoption.Listable[string]{
+						v,
+					}
+				}
+			}
+			t.WebsocketOptions = option.V2RayWebsocketOptions{
+				Path:                path,
+				EarlyDataHeaderName: "Sec-WebSocket-Protocol",
+				MaxEarlyData:        uint32(ed),
+				Headers:             headers,
+			}
+		case "grpc":
+			network := GrpcNetworkConfig{}
+			if len(n.NetworkSettings) != 0 {
+				err := json.Unmarshal(n.NetworkSettings, &network)
+				if err != nil {
+					return option.Inbound{}, fmt.Errorf("decode NetworkSettings error: %s", err)
+				}
+			}
+			t.GRPCOptions = option.V2RayGRPCOptions{
+				ServiceName: network.ServiceName,
+			}
+		default:
+			t.Type = ""
+		}
+		in.Type = "trojan"
+		trojanoption := &option.TrojanInboundOptions{
+			ListenOptions: listen,
+			InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+				TLS: &tls,
+			},
+			Transport: &t,
+			Multiplex: multiplex,
+		}
+		if c.SingOptions.FallBackConfigs != nil {
+			// fallback handling
+			fallback := c.SingOptions.FallBackConfigs.FallBack
+			fallbackPort, err := strconv.Atoi(fallback.ServerPort)
+			if err == nil {
+				trojanoption.Fallback = &option.ServerOptions{
+					Server:     fallback.Server,
+					ServerPort: uint16(fallbackPort),
+				}
+			}
+			fallbackForALPNMap := c.SingOptions.FallBackConfigs.FallBackForALPN
+			fallbackForALPN := make(map[string]*option.ServerOptions, len(fallbackForALPNMap))
+			if err := processFallback(c, fallbackForALPN); err == nil {
+				trojanoption.FallbackForALPN = fallbackForALPN
+			}
+		}
+		in.Options = trojanoption
+	case "tuic":
+		in.Type = "tuic"
+		tls.ALPN = append(tls.ALPN, "h3")
+		in.Options = &option.TUICInboundOptions{
+			ListenOptions:     listen,
+			CongestionControl: info.Tuic.CongestionControl,
+			ZeroRTTHandshake:  info.Tuic.ZeroRTTHandshake,
+			InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+				TLS: &tls,
+			},
+		}
+	case "hysteria":
+		in.Type = "hysteria"
+		in.Options = &option.HysteriaInboundOptions{
+			ListenOptions: listen,
+			UpMbps:        info.Hysteria.UpMbps,
+			DownMbps:      info.Hysteria.DownMbps,
+			Obfs:          info.Hysteria.Obfs,
+			InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+				TLS: &tls,
+			},
+		}
+	case "hysteria2":
+		in.Type = "hysteria2"
+		var obfs *option.Hysteria2Obfs
+		if info.Hysteria2.ObfsType != "" && info.Hysteria2.ObfsPassword != "" {
+			obfs = &option.Hysteria2Obfs{
+				Type:     info.Hysteria2.ObfsType,
+				Password: info.Hysteria2.ObfsPassword,
+			}
+		} else if info.Hysteria2.ObfsType != "" {
+			obfs = &option.Hysteria2Obfs{
+				Type:     "salamander",
+				Password: info.Hysteria2.ObfsType,
+			}
+		}
+		in.Options = &option.Hysteria2InboundOptions{
+			ListenOptions:         listen,
+			UpMbps:                info.Hysteria2.UpMbps,
+			DownMbps:              info.Hysteria2.DownMbps,
+			IgnoreClientBandwidth: info.Hysteria2.Ignore_Client_Bandwidth,
+			Obfs:                  obfs,
+			InboundTLSOptionsContainer: option.InboundTLSOptionsContainer{
+				TLS: &tls,
+			},
+		}
 	default:
-		return option.Inbound{}, fmt.Errorf("unsupported node type: %s (this build supports anytls only)", info.Type)
+		return option.Inbound{}, fmt.Errorf("unsupported node type: %s (supported: anytls/vless/vmess/trojan/shadowsocks/tuic/hysteria/hysteria2)", info.Type)
 	}
 	return in, nil
 }
