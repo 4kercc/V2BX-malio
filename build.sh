@@ -9,7 +9,8 @@ echo "开始构建 V2bX ${VERSION}（AnyTLS-only 精简版，sing-box 内核）.
 LDFLAGS="-s -w -X 'github.com/InazumaV/V2bX/cmd.version=${VERSION}'"
 # sing-only：不含 xray/hysteria2/quic/dhcp/clash-api
 # with_gvisor：WireGuard(WARP) 出站的用户态网络栈必需；with_wireguard：WARP 出站必需
-TAGS="sing,with_gvisor,with_wireguard"
+# with_utls：VLESS+Reality 入站必需（sing-box Reality 依赖 uTLS 指纹），缺它 Reality 节点启动报错
+TAGS="sing,with_utls,with_gvisor,with_wireguard"
 
 # 清理旧文件
 rm -rf build
